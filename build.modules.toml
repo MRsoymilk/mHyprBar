@@ -1,0 +1,18 @@
+# Compile-time module selection.
+# Changing this file requires rebuilding mHyprBar.
+#
+# true  = module source is compiled into the binary
+# false = module source is excluded from the binary
+
+[modules]
+menu = true
+active_window = true
+clock = true
+cpu = true
+memory = true
+network = true
+# Optional integrations. Enable only when the corresponding desktop service/tool is available.
+audio = false
+mpris = true
+disk = true
+battery = true

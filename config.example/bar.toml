@@ -1,0 +1,35 @@
+# Global bar geometry. Module appearance lives in modules/*.toml.
+
+position = "top"
+height = 30
+margin_top = 0
+margin_right = 0
+margin_bottom = 0
+margin_left = 0
+exclusive_zone = true
+background = "#181818EE"
+
+# These names must also be enabled in build.modules.toml.
+left = ["menu"]
+center = ["active_window"]
+right = ["network", "cpu", "memory", "disk", "battery", "clock"]
+
+[workspaces]
+# Each monitor displays local labels 1..9.
+# The internal workspace id is: monitor_slot * count + local_label.
+count = 9
+width = 28
+gap = 0
+margin_right = 8
+font_family = "sans-serif"
+font_size = 13.0
+text = "#F2F2F2"
+empty_background = "transparent"
+occupied_background = "#383838"
+active_background = "#666666"
+
+# Optional stable monitor-name overrides. Without overrides, Hyprland monitor id
+# is used as the slot (normally 0 -> workspaces 1..9, 1 -> 10..18).
+[workspaces.monitor_slots]
+# "eDP-1" = 0
+# "DP-1" = 1

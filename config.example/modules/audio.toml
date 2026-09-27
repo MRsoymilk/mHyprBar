@@ -1,0 +1,13 @@
+target = "@DEFAULT_AUDIO_SINK@"
+interval_ms = 500
+label = "VOL"
+muted_text = "MUTE"
+
+[style]
+foreground = "#F2F2F2"
+background = "transparent"
+font_family = "sans-serif"
+font_size = 13.0
+padding_x = 8
+padding_y = 4
+min_width = 84

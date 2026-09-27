@@ -1,0 +1,13 @@
+interface = "auto"
+interval_ms = 1000
+show_interface = true
+show_rates = true
+
+[style]
+foreground = "#F2F2F2"
+background = "transparent"
+font_family = "sans-serif"
+font_size = 13.0
+padding_x = 8
+padding_y = 4
+min_width = 180

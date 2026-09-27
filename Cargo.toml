@@ -1,0 +1,17 @@
+[package]
+name = "mhyprbar"
+version = "0.1.0"
+edition = "2024"
+description = "A native Wayland status bar for Hyprland"
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.9"
+cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash"] }
+libc = "0.2"
+smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
+wayland-client = "0.31.14"

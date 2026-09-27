@@ -1,0 +1,11 @@
+label = "MEM"
+interval_ms = 2000
+
+[style]
+foreground = "#f2f2f2"
+background = "transparent"
+font_family = "sans-serif"
+font_size = 13.0
+padding_x = 8
+padding_y = 4
+min_width = 72
