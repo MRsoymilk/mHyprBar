@@ -37,6 +37,8 @@ pub enum ModuleVisual {
     Text,
     #[cfg(mhypr_module = "cpu")]
     Cpu(cpu::CpuVisual),
+    #[cfg(mhypr_module = "memory")]
+    Memory(memory::MemoryVisual),
 }
 
 pub(super) trait StatusModule {

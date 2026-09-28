@@ -38,6 +38,8 @@ use wayland_client::{
 
 #[cfg(mhypr_module = "cpu")]
 use crate::cpu_popup::CpuPopupModel;
+#[cfg(mhypr_module = "memory")]
+use crate::memory_popup::MemoryPopupModel;
 use crate::{
     config::BarConfig,
     hyprland::{self, MonitorState, Snapshot},
@@ -118,6 +120,8 @@ pub fn run(config: BarConfig) -> Result<()> {
         tooltip: None,
         #[cfg(mhypr_module = "cpu")]
         cpu_popup: None,
+        #[cfg(mhypr_module = "memory")]
+        memory_popup: None,
         #[cfg(mhypr_module = "tray")]
         tray_popup: None,
         exit: false,
@@ -256,6 +260,10 @@ pub fn run(config: BarConfig) -> Result<()> {
         if let Some(cpu_timeout) = app.cpu_popup_timeout() {
             timeout = timeout.min(cpu_timeout);
         }
+        #[cfg(mhypr_module = "memory")]
+        if let Some(memory_timeout) = app.memory_popup_timeout() {
+            timeout = timeout.min(memory_timeout);
+        }
         event_loop
             .dispatch(Some(timeout), &mut app)
             .context("event loop dispatch failed")?;
@@ -265,6 +273,8 @@ pub fn run(config: BarConfig) -> Result<()> {
         app.maybe_show_tray_tooltip(&qh);
         #[cfg(mhypr_module = "cpu")]
         app.refresh_cpu_popup_if_due();
+        #[cfg(mhypr_module = "memory")]
+        app.refresh_memory_popup_if_due();
     }
 
     Ok(())
@@ -302,6 +312,18 @@ struct TooltipSurface {
 struct CpuPopupSurface {
     layer: LayerSurface,
     model: CpuPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
+}
+
+#[cfg(mhypr_module = "memory")]
+struct MemoryPopupSurface {
+    layer: LayerSurface,
+    model: MemoryPopupModel,
     width: u32,
     height: u32,
     configured: bool,
@@ -363,6 +385,8 @@ struct App {
     tooltip: Option<TooltipSurface>,
     #[cfg(mhypr_module = "cpu")]
     cpu_popup: Option<CpuPopupSurface>,
+    #[cfg(mhypr_module = "memory")]
+    memory_popup: Option<MemoryPopupSurface>,
     #[cfg(mhypr_module = "tray")]
     tray_popup: Option<TrayPopupSurface>,
     exit: bool,
@@ -426,6 +450,8 @@ impl App {
         self.clear_tray_hover();
         #[cfg(mhypr_module = "cpu")]
         self.close_cpu_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
         self.close_tray_popup();
         self.bars.retain(|bar| &bar.output != output);
     }
@@ -1030,6 +1056,8 @@ impl App {
         };
 
         self.tooltip = None;
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
         self.close_tray_popup();
 
         let surface = self.compositor.create_surface(qh);
@@ -1145,6 +1173,146 @@ impl App {
         layer.commit();
     }
 
+    #[cfg(mhypr_module = "memory")]
+    fn memory_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.memory_popup.as_ref()?;
+        Some(popup.next_refresh.saturating_duration_since(Instant::now()))
+    }
+
+    #[cfg(mhypr_module = "memory")]
+    fn refresh_memory_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let Some(popup) = self.memory_popup.as_mut() else {
+            return;
+        };
+        if now < popup.next_refresh {
+            return;
+        }
+        if let Err(error) = popup.model.refresh() {
+            eprintln!("mhyprbar: memory popup refresh failed: {error:#}");
+        }
+        popup.next_refresh = now + popup.model.config.refresh_interval();
+        self.draw_memory_popup();
+    }
+
+    #[cfg(mhypr_module = "memory")]
+    fn close_memory_popup(&mut self) {
+        self.memory_popup = None;
+    }
+
+    #[cfg(mhypr_module = "memory")]
+    fn toggle_memory_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.memory_popup.is_some() {
+            self.close_memory_popup();
+            return Ok(true);
+        }
+
+        let model = MemoryPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("memory popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x = (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-memory-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        let interval = model.config.refresh_interval();
+        self.memory_popup = Some(MemoryPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh: Instant::now() + interval,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "memory")]
+    fn draw_memory_popup(&mut self) {
+        let Some(popup) = self.memory_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let panel_x = popup.panel_x;
+        let panel_y = popup.panel_y;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create memory popup SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) =
+            self.renderer
+                .draw_memory_popup(canvas, width, height, &popup.model, panel_x, panel_y)
+        {
+            eprintln!("mhyprbar: memory popup render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach memory popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
     fn reload_config(&mut self) -> Result<()> {
         let config = crate::validate_config().context("reload validation failed")?;
         let background = config.background_rgba()?;
@@ -1153,6 +1321,8 @@ impl App {
         self.clear_tray_hover();
         #[cfg(mhypr_module = "cpu")]
         self.close_cpu_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
         self.close_tray_popup();
         if let Some(tray) = self.tray.as_mut() {
             tray.reload_config()?;
@@ -1487,6 +1657,18 @@ impl App {
             }
         }
 
+        #[cfg(mhypr_module = "memory")]
+        if name == "memory" {
+            match self.toggle_memory_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: memory popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
         match self.modules.activate(&name) {
             Ok(true) => self.draw_all(),
             Ok(false) => {}
@@ -1561,6 +1743,15 @@ impl LayerShellHandler for App {
             self.cpu_popup = None;
             return;
         }
+        #[cfg(mhypr_module = "memory")]
+        if self
+            .memory_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.memory_popup = None;
+            return;
+        }
         #[cfg(mhypr_module = "tray")]
         if self
             .tray_popup
@@ -1612,6 +1803,20 @@ impl LayerShellHandler for App {
                 popup.configured = true;
             }
             self.draw_cpu_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "memory")]
+        if self
+            .memory_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.memory_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_memory_popup();
             return;
         }
         #[cfg(mhypr_module = "tray")]
@@ -1739,6 +1944,55 @@ impl PointerHandler for App {
                 }
                 if redraw {
                     self.draw_cpu_popup();
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "memory")]
+            if self
+                .memory_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                let mut redraw = false;
+                match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        if let Some(popup) = self.memory_popup.as_mut() {
+                            let local_y = event.position.1 - popup.panel_y;
+                            let next = if event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                            {
+                                popup.model.process_at(local_y)
+                            } else {
+                                None
+                            };
+                            if popup.model.hovered_process != next {
+                                popup.model.hovered_process = next;
+                                redraw = true;
+                            }
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let inside = self.memory_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside {
+                            self.close_memory_popup();
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_memory_popup();
+                    }
+                    _ => {}
+                }
+                if redraw {
+                    self.draw_memory_popup();
                 }
                 continue;
             }

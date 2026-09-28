@@ -3,6 +3,8 @@ mod config;
 mod cpu_popup;
 mod hyprland;
 mod ipc;
+#[cfg(mhypr_module = "memory")]
+mod memory_popup;
 mod modules;
 mod render;
 mod tray;
