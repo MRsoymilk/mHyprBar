@@ -1,0 +1,47 @@
+icon_size = 18
+spacing = 6
+show_passive = false
+
+[tooltip]
+enabled = true
+delay_ms = 350
+offset = 6
+max_chars = 96
+
+[tooltip.style]
+foreground = "#F2F2F2"
+background = "#202020EE"
+font_family = "sans-serif"
+font_size = 12.0
+padding_x = 8
+padding_y = 5
+min_width = 0
+
+[menu]
+width = 280
+item_height = 30
+padding_x = 10
+border_width = 1
+separator_inset = 8
+indicator = "›"
+hover_background = "#3A3A3AF0"
+border = "#626262"
+separator = "#626262"
+
+[menu.style]
+foreground = "#F2F2F2"
+background = "#202020F2"
+font_family = "sans-serif"
+font_size = 13.0
+padding_x = 0
+padding_y = 0
+min_width = 0
+
+[style]
+foreground = "#F2F2F2"
+background = "transparent"
+font_family = "sans-serif"
+font_size = 13.0
+padding_x = 6
+padding_y = 4
+min_width = 0

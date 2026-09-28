@@ -26,7 +26,8 @@ The base panel and first status-module renderer are implemented:
 - event-driven workspace/monitor updates from Hyprland socket2;
 - local workspace labels 1–9 on every monitor;
 - active and occupied workspace highlighting;
-- clickable workspace switching per monitor.
+- clickable workspace switching per monitor;
+- StatusNotifierItem system tray with event-driven add/remove/update, IconPixmap rendering and primary activation.
 
 P4 status modules are complete. The default build keeps external desktop integrations disabled: audio (`wpctl`) and MPRIS (`playerctl`) are opt-in compile-time modules.
 
@@ -49,9 +50,10 @@ cpu = true
 memory = true
 network = true
 audio = false
-mpris = false
+mpris = true
 disk = true
 battery = true
+tray = true
 ~~~
 
 `true` means the module source is compiled into the binary. `false` excludes that module from the binary.
@@ -70,15 +72,14 @@ cargo run -- --list-modules
 
 ## Dependency policy
 
-The default build avoids optional desktop-service integrations. Core modules read Hyprland IPC,
-Linux `/proc` and `/sys` directly. No extra Rust crate is added for audio or MPRIS.
-
-Optional integrations are disabled by default:
+Core modules read Hyprland IPC, Linux `/proc` and `/sys` directly. Audio and MPRIS remain
+compile-time selectable integrations:
 
 - `audio` uses `wpctl` and therefore requires a working PipeWire/WirePlumber session;
-- `mpris` uses `playerctl` and an MPRIS-capable media player.
+- `mpris` uses `playerctl` and an MPRIS-capable media player;
+- `tray` adds one direct Rust dependency, `rustsni`, over the session D-Bus. It is vendored at `vendor/rustsni` with bounded synchronous D-Bus waits so a non-responsive tray application cannot freeze the bar; it still uses pure-Rust `rustbus`, with no GTK, Qt, Tokio, libdbus, or image-decoding crate.
 
-Enable either module explicitly in `build.modules.toml` only when needed. Battery discovery is
+Enable or disable these modules in `build.modules.toml` as needed. Battery discovery is
 native through `/sys/class/power_supply`; `device = "auto"` hides the module silently when no
 battery exists.
 
@@ -106,6 +107,7 @@ Each compiled module has its own configuration file:
 ~/.config/mhyprbar/modules/mpris.toml
 ~/.config/mhyprbar/modules/disk.toml
 ~/.config/mhyprbar/modules/battery.toml
+~/.config/mhyprbar/modules/tray.toml
 ~~~
 
 The per-module file controls module-specific behavior and visual style. Periodic modules also define their own refresh interval; event-driven modules such as `active_window` do not poll. An empty module value is hidden completely and consumes no bar width.
@@ -137,14 +139,100 @@ MHYPRBAR_CONFIG_DIR=config.example cargo run -- --check-config
 ~~~toml
 left = ["menu"]
 center = ["active_window"]
-right = ["network", "cpu", "memory", "disk", "battery", "clock"]
+right = ["network", "cpu", "memory", "disk", "battery", "tray", "clock"]
 ~~~
 
 A module named in `bar.toml` must also be enabled in `build.modules.toml`.
 
+## System tray
+
+The `tray` module implements the StatusNotifierWatcher + StatusNotifierHost pair and is
+event-driven through the same calloop loop as Wayland.
+
+Current tray interaction supports:
+
+- dynamic item registration/removal/update;
+- SNI `IconPixmap` (ARGB32) rendered directly into the existing wl_shm buffer;
+- `NeedsAttention` pixmaps;
+- left-click `Activate` with monitor-relative positions converted to screen coordinates;
+- right-click DBusMenu lists rendered directly by mHyprBar as a Layer Shell overlay;
+- fallback `ContextMenu(x, y)` for items that do not expose a DBusMenu tree;
+- middle-click `SecondaryActivate`;
+- horizontal/vertical wheel forwarding through `Scroll`;
+- `ItemIsMenu` items prefer their menu;
+- delayed hover tooltip using SNI `ToolTip.title/text`, falling back to the item title/id;
+- hidden passive items by default.
+
+~~~toml
+# modules/tray.toml
+icon_size = 18
+spacing = 6
+show_passive = false
+
+[tooltip]
+enabled = true
+delay_ms = 350
+offset = 6
+max_chars = 96
+
+[tooltip.style]
+foreground = "#F2F2F2"
+background = "#202020EE"
+font_family = "sans-serif"
+font_size = 12.0
+padding_x = 8
+padding_y = 5
+min_width = 0
+
+[menu]
+width = 280
+item_height = 30
+padding_x = 10
+border_width = 1
+separator_inset = 8
+indicator = "›"
+hover_background = "#3A3A3AF0"
+border = "#626262"
+separator = "#626262"
+
+[menu.style]
+foreground = "#F2F2F2"
+background = "#202020F2"
+font_family = "sans-serif"
+font_size = 13.0
+padding_x = 0
+padding_y = 0
+min_width = 0
+~~~
+
+Items that expose only `IconName` are resolved from XDG icon directories. SVG theme icons are
+rasterized once through the system `rsvg-convert` + `magick` tools and cached in memory; PNG
+theme icons use `magick` directly. This keeps GTK/Qt/SVG/image-decoding crates out of mHyprBar's
+Rust dependency graph. If those optional tools are unavailable, the item falls back without
+crashing the bar.
+
+DBusMenu is handled entirely in-process by mHyprBar. The bar reads the DBusMenu tree through
+`rustsni`, renders a transparent full-output `Layer::Overlay` surface, performs pointer hit
+testing itself, and sends the selected numeric node id directly back through
+`rustsni::menu_click`. No temporary TOML, shell callback, IPC round-trip, or mHyprMenu process is
+involved. First-level and second-level menus remain cascading; deeper DBusMenu levels are flattened
+into the second level with `›` prefixes. Separators and check/radio state are preserved.
+
+Tooltips are independent `Layer::Overlay` surfaces on the same output as the hovered bar. They do
+not reserve screen space and are destroyed when the pointer leaves the tray, changes item, clicks,
+or reloads the tray config. `--tray-tooltip N` forces item `N`'s tooltip for debugging.
+
+mHyprBar vendors the same `rustsni 0.2.2` source under `vendor/rustsni` with bounded synchronous
+D-Bus waits. A non-responsive StatusNotifierItem therefore times out instead of freezing the bar's
+single-threaded calloop event loop.
+
+`mhyprbar --status` reports `tray_items=N`, which is useful for distinguishing an empty tray
+from a rendering problem.
+
 ## mHyprMenu integration
 
-The optional `menu` module is a normal clickable bar module. Its default configuration launches
+The optional `menu` module is separate from the tray. The tray does not depend on mHyprMenu.
+The normal `menu` module is a clickable bar module whose default configuration launches
 `mhyprmenu` directly:
 
 ~~~toml
@@ -180,6 +268,34 @@ name, set explicit overrides:
 Workspace state is refreshed from Hyprland's event socket rather than by polling
 `hyprctl`. Clicking a workspace focuses that monitor and switches to the mapped
 global workspace.
+
+## Command-line control
+
+A running bar listens on `$XDG_RUNTIME_DIR/mhyprbar.sock` with user-only permissions.
+
+~~~bash
+mhyprbar --status
+mhyprbar --reload
+mhyprbar --tray-list
+mhyprbar --tray-menu 0
+mhyprbar --tray-tooltip 0
+mhyprbar --quit
+~~~
+
+`--reload` reloads `bar.toml` and every compiled module TOML without restarting the process.
+The new configuration is fully loaded and validated first; if validation fails, the command exits
+non-zero and the currently running configuration remains active.
+
+Changes to `build.modules.toml` are compile-time changes and still require rebuilding/restarting
+mHyprBar.
+
+`--status` prints the running PID, output count, position/height, tray item count, compiled
+modules and current left/center/right layout.
+
+`--tray-list` prints the current visual tray order with index, title, menu availability, SNI
+status, tooltip text, and per-output tray x ranges. `--tray-menu N` toggles item `N`'s
+in-process DBusMenu overlay; normal right-click uses the same open/close toggle behavior. `--tray-tooltip N` forces item `N`'s tooltip. Both are
+debug/control equivalents of the normal pointer interactions.
 
 ## Run
 

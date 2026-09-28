@@ -24,6 +24,8 @@ pub mod menu;
 pub mod mpris;
 #[cfg(mhypr_module = "network")]
 pub mod network;
+#[cfg(mhypr_module = "tray")]
+pub mod tray;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CompiledModule {
@@ -46,6 +48,7 @@ struct RuntimeModule {
     text: String,
     next_update: Option<Instant>,
     last_error: Option<String>,
+    width_override: Option<i32>,
 }
 
 impl RuntimeModule {
@@ -56,6 +59,7 @@ impl RuntimeModule {
             text,
             next_update: Some(Instant::now()),
             last_error: None,
+            width_override: None,
         }
     }
 
@@ -105,6 +109,7 @@ impl RuntimeModule {
 pub struct ModuleView<'a> {
     pub text: &'a str,
     pub style: &'a ModuleStyle,
+    pub width_override: Option<i32>,
 }
 
 pub struct ModuleManager {
@@ -134,6 +139,8 @@ impl ModuleManager {
             RuntimeModule::new(Box::new(disk::DiskModule::load()?)),
             #[cfg(mhypr_module = "battery")]
             RuntimeModule::new(Box::new(battery::BatteryModule::load()?)),
+            #[cfg(mhypr_module = "tray")]
+            RuntimeModule::new(Box::new(tray::TrayModule::load()?)),
         ];
 
         Ok(Self { modules })
@@ -166,6 +173,21 @@ impl ModuleManager {
             .is_some_and(|module| module.refresh_now(now))
     }
 
+    pub fn set_width_override(&mut self, name: &str, width: Option<i32>) -> bool {
+        let Some(module) = self
+            .modules
+            .iter_mut()
+            .find(|module| module.module.name() == name)
+        else {
+            return false;
+        };
+        if module.width_override == width {
+            return false;
+        }
+        module.width_override = width;
+        true
+    }
+
     pub fn activate(&mut self, name: &str) -> Result<bool> {
         self.modules
             .iter_mut()
@@ -180,6 +202,7 @@ impl ModuleManager {
             .map(|module| ModuleView {
                 text: &module.text,
                 style: module.module.style(),
+                width_override: module.width_override,
             })
     }
 }
@@ -235,6 +258,11 @@ pub fn compiled() -> Vec<CompiledModule> {
         CompiledModule {
             name: battery::NAME,
             config_file: battery::CONFIG_FILE,
+        },
+        #[cfg(mhypr_module = "tray")]
+        CompiledModule {
+            name: tray::NAME,
+            config_file: tray::CONFIG_FILE,
         },
     ]
 }

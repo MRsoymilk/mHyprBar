@@ -16,3 +16,4 @@ audio = false
 mpris = true
 disk = true
 battery = true
+tray = true

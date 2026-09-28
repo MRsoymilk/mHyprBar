@@ -1,10 +1,13 @@
 use anyhow::Result;
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache};
 
+#[cfg(mhypr_module = "tray")]
+use crate::tray_popup::{TrayPopupHit, TrayPopupModel, TrayPopupRect};
 use crate::{
     config::{BarConfig, ModuleStyle, WorkspacesConfig},
     hyprland::{MonitorState, Snapshot},
     modules::{ModuleManager, ModuleView},
+    tray::TrayState,
 };
 
 pub struct Renderer {
@@ -29,6 +32,7 @@ impl Renderer {
         background: [u8; 4],
         config: &BarConfig,
         modules: &ModuleManager,
+        tray: Option<&TrayState>,
         monitor: Option<&MonitorState>,
         snapshot: &Snapshot,
     ) -> Result<()> {
@@ -50,9 +54,17 @@ impl Renderer {
             self.draw_workspaces(canvas, width, height, &config.workspaces, monitor, snapshot)?;
         let (left_x, center_x, right_x) = group_origins(width, workspace_width, config, modules);
 
-        self.draw_group(canvas, width, height, left_x, &config.left, modules)?;
-        self.draw_group(canvas, width, height, center_x, &config.center, modules)?;
-        self.draw_group(canvas, width, height, right_x, &config.right, modules)?;
+        self.draw_group(canvas, width, height, left_x, &config.left, modules, tray)?;
+        self.draw_group(
+            canvas,
+            width,
+            height,
+            center_x,
+            &config.center,
+            modules,
+            tray,
+        )?;
+        self.draw_group(canvas, width, height, right_x, &config.right, modules, tray)?;
 
         Ok(())
     }
@@ -111,6 +123,270 @@ impl Renderer {
         Ok(style.strip_width())
     }
 
+    pub fn tooltip_size(text: &str, style: &ModuleStyle) -> (u32, u32) {
+        let estimated_text = (text.chars().count() as f32 * style.font_size * 0.62)
+            .ceil()
+            .max(1.0) as i32;
+        let max_text_width = 440;
+        let text_width = estimated_text.min(max_text_width).max(1);
+        let lines = ((estimated_text + max_text_width - 1) / max_text_width).clamp(1, 3);
+        let line_height = (style.font_size * 1.35).ceil().max(1.0) as i32;
+        let width = text_width
+            .saturating_add(style.padding_x.max(0).saturating_mul(2))
+            .max(48);
+        let height = lines
+            .saturating_mul(line_height)
+            .saturating_add(style.padding_y.max(0).saturating_mul(2))
+            .max(24);
+        (width as u32, height as u32)
+    }
+
+    pub fn draw_tooltip(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        text: &str,
+        style: &ModuleStyle,
+    ) -> Result<()> {
+        canvas.fill(0);
+        let background = style.background_rgba()?;
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: 0,
+                y: 0,
+                w: width as i32,
+                h: height as i32,
+            },
+            background,
+        );
+
+        let foreground = style.foreground_rgba()?;
+        let color = Color::rgba(foreground[0], foreground[1], foreground[2], foreground[3]);
+        let padding_x = style.padding_x.max(0);
+        let padding_y = style.padding_y.max(0);
+        let content_width = width
+            .saturating_sub(padding_x.saturating_mul(2) as u32)
+            .max(1);
+        let content_height = height
+            .saturating_sub(padding_y.saturating_mul(2) as u32)
+            .max(1);
+        let line_height = (style.font_size * 1.35).max(style.font_size);
+
+        let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(style.font_size, line_height));
+        buffer.set_size(Some(content_width as f32), Some(content_height as f32));
+        let family = match style.font_family.as_str() {
+            "sans-serif" => Family::SansSerif,
+            "serif" => Family::Serif,
+            "monospace" => Family::Monospace,
+            "cursive" => Family::Cursive,
+            "fantasy" => Family::Fantasy,
+            name => Family::Name(name),
+        };
+        let attrs = Attrs::new().family(family);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.draw(
+            &mut self.fonts,
+            &mut self.cache,
+            color,
+            |x, y, w, h, pixel| {
+                blend_block(
+                    canvas,
+                    width,
+                    height,
+                    padding_x.saturating_add(x),
+                    padding_y.saturating_add(y),
+                    w,
+                    h,
+                    pixel,
+                );
+            },
+        );
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "tray")]
+    pub fn draw_tray_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        menu: &TrayPopupModel,
+    ) -> Result<()> {
+        canvas.fill(0);
+
+        let background = menu.style.style.background_rgba()?;
+        let foreground = menu.style.style.foreground_rgba()?;
+        let hover = menu.style.hover_rgba()?;
+        let border = menu.style.border_rgba()?;
+        let separator = menu.style.separator_rgba()?;
+
+        let root = menu.root_rect(width as f64, height as f64);
+        draw_popup_panel(
+            canvas,
+            width,
+            height,
+            root,
+            background,
+            border,
+            menu.style.border_width,
+        );
+
+        for (index, item) in menu.items.iter().enumerate() {
+            let Some(rect) = menu.root_item_rect(index, width as f64, height as f64) else {
+                continue;
+            };
+            if menu.hovered == Some(TrayPopupHit::Root(index)) {
+                fill_rect(canvas, width, height, popup_rect(rect), hover);
+            }
+            if item.separator_before {
+                draw_popup_separator(
+                    canvas,
+                    width,
+                    height,
+                    rect,
+                    separator,
+                    menu.style.separator_inset,
+                );
+            }
+
+            let mut color = foreground;
+            if !item.enabled {
+                color[3] = color[3].min(110);
+            }
+            self.draw_popup_label(
+                canvas,
+                width,
+                height,
+                &item.label,
+                rect,
+                menu.style.padding_x,
+                menu.style.style.font_size,
+                Color::rgba(color[0], color[1], color[2], color[3]),
+                &menu.style.style.font_family,
+            );
+
+            if !item.children.is_empty() {
+                self.draw_popup_label(
+                    canvas,
+                    width,
+                    height,
+                    &menu.style.indicator,
+                    TrayPopupRect {
+                        x: rect.x + rect.w - 24.0,
+                        y: rect.y,
+                        w: 20.0,
+                        h: rect.h,
+                    },
+                    0,
+                    menu.style.style.font_size,
+                    Color::rgba(foreground[0], foreground[1], foreground[2], 180),
+                    &menu.style.style.font_family,
+                );
+            }
+        }
+
+        if let (Some(root_index), Some(submenu)) = (
+            menu.open_root,
+            menu.submenu_rect(width as f64, height as f64),
+        ) {
+            draw_popup_panel(
+                canvas,
+                width,
+                height,
+                submenu,
+                background,
+                border,
+                menu.style.border_width,
+            );
+
+            for (child, item) in menu.items[root_index].children.iter().enumerate() {
+                let Some(rect) = menu.child_item_rect(child, width as f64, height as f64) else {
+                    continue;
+                };
+                if menu.hovered
+                    == Some(TrayPopupHit::Child {
+                        root: root_index,
+                        child,
+                    })
+                {
+                    fill_rect(canvas, width, height, popup_rect(rect), hover);
+                }
+                if item.separator_before {
+                    draw_popup_separator(
+                        canvas,
+                        width,
+                        height,
+                        rect,
+                        separator,
+                        menu.style.separator_inset,
+                    );
+                }
+
+                let mut color = foreground;
+                if !item.enabled {
+                    color[3] = color[3].min(110);
+                }
+                self.draw_popup_label(
+                    canvas,
+                    width,
+                    height,
+                    &item.label,
+                    rect,
+                    menu.style.padding_x,
+                    menu.style.style.font_size,
+                    Color::rgba(color[0], color[1], color[2], color[3]),
+                    &menu.style.style.font_family,
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "tray")]
+    #[allow(clippy::too_many_arguments)]
+    fn draw_popup_label(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        text: &str,
+        rect: TrayPopupRect,
+        padding_x: i32,
+        font_size: f32,
+        color: Color,
+        font_family: &str,
+    ) {
+        let text_x = rect.x.round() as i32 + padding_x.max(0);
+        let text_y = rect.y.round() as i32;
+        let text_w = (rect.w - (padding_x.max(0) * 2) as f64).max(1.0) as f32;
+
+        let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(font_size, rect.h as f32));
+        buffer.set_size(Some(text_w), Some(rect.h as f32));
+        let family = match font_family {
+            "sans-serif" => Family::SansSerif,
+            "serif" => Family::Serif,
+            "monospace" => Family::Monospace,
+            "cursive" => Family::Cursive,
+            "fantasy" => Family::Fantasy,
+            name => Family::Name(name),
+        };
+        let attrs = Attrs::new().family(family);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.draw(
+            &mut self.fonts,
+            &mut self.cache,
+            color,
+            |x, y, w, h, pixel| {
+                blend_block(canvas, width, height, text_x + x, text_y + y, w, h, pixel);
+            },
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw_workspace_label(
         &mut self,
@@ -160,6 +436,7 @@ impl Renderer {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_group(
         &mut self,
         canvas: &mut [u8],
@@ -168,6 +445,7 @@ impl Renderer {
         mut x: i32,
         names: &[String],
         modules: &ModuleManager,
+        tray: Option<&TrayState>,
     ) -> Result<()> {
         for name in names {
             let Some(view) = modules.view(name) else {
@@ -189,10 +467,64 @@ impl Renderer {
                 fill_rect(canvas, width, height, rect, background);
             }
 
-            self.draw_text(canvas, width, height, rect, &view)?;
+            if name == "tray" {
+                if let Some(tray) = tray {
+                    self.draw_tray(canvas, width, height, rect, tray, &view);
+                }
+            } else {
+                self.draw_text(canvas, width, height, rect, &view)?;
+            }
             x = x.saturating_add(module_width);
         }
         Ok(())
+    }
+
+    fn draw_tray(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        tray: &TrayState,
+        view: &ModuleView<'_>,
+    ) {
+        let icon_size = tray.icon_size().max(1);
+        let mut x = rect.x.saturating_add(tray.padding_x());
+        let y = rect
+            .y
+            .saturating_add((rect.h.saturating_sub(icon_size)).max(0) / 2);
+        let mut fallback = view.style.foreground_rgba().unwrap_or([255, 255, 255, 255]);
+        fallback[3] = fallback[3].min(96);
+
+        for icon in tray.icons() {
+            if let Some(pixels) = icon.pixels {
+                draw_native_argb_pixmap(
+                    canvas,
+                    width,
+                    height,
+                    x,
+                    y,
+                    icon_size,
+                    icon.width,
+                    icon.height,
+                    pixels,
+                );
+            } else {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x,
+                        y,
+                        w: icon_size,
+                        h: icon_size,
+                    },
+                    fallback,
+                );
+            }
+            x = x.saturating_add(icon_size).saturating_add(tray.spacing());
+        }
     }
 
     fn draw_text(
@@ -258,13 +590,18 @@ struct Rect {
     h: i32,
 }
 
+pub struct ModuleHit<'a> {
+    pub name: &'a str,
+    pub offset_x: i32,
+}
+
 pub fn module_at_x<'a>(
     x: f64,
     width: u32,
     workspace_visible: bool,
     config: &'a BarConfig,
     modules: &ModuleManager,
-) -> Option<&'a str> {
+) -> Option<ModuleHit<'a>> {
     if x < 0.0 {
         return None;
     }
@@ -310,7 +647,7 @@ fn hit_group<'a>(
     start_x: i32,
     names: &'a [String],
     modules: &ModuleManager,
-) -> Option<&'a str> {
+) -> Option<ModuleHit<'a>> {
     let mut cursor = start_x;
     for name in names {
         let Some(view) = modules.view(name) else {
@@ -318,7 +655,10 @@ fn hit_group<'a>(
         };
         let width = module_width(&view);
         if x >= cursor as f64 && x < cursor.saturating_add(width) as f64 {
-            return Some(name.as_str());
+            return Some(ModuleHit {
+                name: name.as_str(),
+                offset_x: (x - cursor as f64) as i32,
+            });
         }
         cursor = cursor.saturating_add(width);
     }
@@ -334,6 +674,9 @@ fn group_width(names: &[String], modules: &ModuleManager) -> i32 {
 }
 
 fn module_width(view: &ModuleView<'_>) -> i32 {
+    if let Some(width) = view.width_override {
+        return width.max(0);
+    }
     if view.text.is_empty() {
         return 0;
     }
@@ -351,6 +694,184 @@ fn estimate_text_width(text: &str, style: &ModuleStyle) -> i32 {
         .map(|ch| if ch.is_ascii() { 0.62_f32 } else { 1.0_f32 })
         .sum::<f32>();
     (em * style.font_size).ceil() as i32
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_native_argb_pixmap(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    target_size: i32,
+    source_width: i32,
+    source_height: i32,
+    pixels: &[u8],
+) {
+    if target_size <= 0 || source_width <= 0 || source_height <= 0 {
+        return;
+    }
+    let sw = source_width as usize;
+    let sh = source_height as usize;
+    if pixels.len() < sw.saturating_mul(sh).saturating_mul(4) {
+        return;
+    }
+
+    let (draw_w, draw_h) = if source_width >= source_height {
+        (
+            target_size,
+            ((source_height as i64 * target_size as i64) / source_width as i64)
+                .max(1)
+                .min(target_size as i64) as i32,
+        )
+    } else {
+        (
+            ((source_width as i64 * target_size as i64) / source_height as i64)
+                .max(1)
+                .min(target_size as i64) as i32,
+            target_size,
+        )
+    };
+    let x0 = x.saturating_add((target_size - draw_w) / 2);
+    let y0 = y.saturating_add((target_size - draw_h) / 2);
+
+    for dy in 0..draw_h {
+        let sy = (dy as i64 * source_height as i64 / draw_h as i64) as usize;
+        for dx in 0..draw_w {
+            let sx = (dx as i64 * source_width as i64 / draw_w as i64) as usize;
+            let offset = (sy * sw + sx) * 4;
+            let (r, g, b, a) = if cfg!(target_endian = "little") {
+                (
+                    pixels[offset + 2],
+                    pixels[offset + 1],
+                    pixels[offset],
+                    pixels[offset + 3],
+                )
+            } else {
+                (
+                    pixels[offset + 1],
+                    pixels[offset + 2],
+                    pixels[offset + 3],
+                    pixels[offset],
+                )
+            };
+            blend_pixel_rgba(
+                canvas,
+                width,
+                height,
+                x0.saturating_add(dx),
+                y0.saturating_add(dy),
+                [r, g, b, a],
+            );
+        }
+    }
+}
+
+fn blend_pixel_rgba(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, rgba: [u8; 4]) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+    let offset = ((y as u32 * width + x as u32) * 4) as usize;
+    blend_at(&mut canvas[offset..offset + 4], rgba);
+}
+
+#[cfg(mhypr_module = "tray")]
+fn popup_rect(rect: TrayPopupRect) -> Rect {
+    Rect {
+        x: rect.x.round() as i32,
+        y: rect.y.round() as i32,
+        w: rect.w.round().max(0.0) as i32,
+        h: rect.h.round().max(0.0) as i32,
+    }
+}
+
+#[cfg(mhypr_module = "tray")]
+fn draw_popup_panel(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: TrayPopupRect,
+    background: [u8; 4],
+    border: [u8; 4],
+    border_width: i32,
+) {
+    let rect_i = popup_rect(rect);
+    fill_rect(canvas, width, height, rect_i, background);
+    if border_width <= 0 {
+        return;
+    }
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: rect_i.x,
+            y: rect_i.y,
+            w: rect_i.w,
+            h: border_width,
+        },
+        border,
+    );
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: rect_i.x,
+            y: rect_i.y + rect_i.h - border_width,
+            w: rect_i.w,
+            h: border_width,
+        },
+        border,
+    );
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: rect_i.x,
+            y: rect_i.y,
+            w: border_width,
+            h: rect_i.h,
+        },
+        border,
+    );
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: rect_i.x + rect_i.w - border_width,
+            y: rect_i.y,
+            w: border_width,
+            h: rect_i.h,
+        },
+        border,
+    );
+}
+
+#[cfg(mhypr_module = "tray")]
+fn draw_popup_separator(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: TrayPopupRect,
+    color: [u8; 4],
+    inset: i32,
+) {
+    let rect = popup_rect(rect);
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: rect.x + inset,
+            y: rect.y,
+            w: (rect.w - inset.saturating_mul(2)).max(0),
+            h: 1,
+        },
+        color,
+    );
 }
 
 fn fill_rect(canvas: &mut [u8], width: u32, height: u32, rect: Rect, rgba: [u8; 4]) {

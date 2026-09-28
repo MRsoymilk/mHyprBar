@@ -11,6 +11,7 @@ const KNOWN_MODULES: &[&str] = &[
     "mpris",
     "disk",
     "battery",
+    "tray",
 ];
 
 fn fail(message: impl std::fmt::Display) -> ! {
