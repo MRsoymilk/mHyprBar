@@ -181,6 +181,26 @@ Workspace state is refreshed from Hyprland's event socket rather than by polling
 `hyprctl`. Clicking a workspace focuses that monitor and switches to the mapped
 global workspace.
 
+## Command-line control
+
+A running bar listens on `$XDG_RUNTIME_DIR/mhyprbar.sock` with user-only permissions.
+
+~~~bash
+mhyprbar --status
+mhyprbar --reload
+mhyprbar --quit
+~~~
+
+`--reload` reloads `bar.toml` and every compiled module TOML without restarting the process.
+The new configuration is fully loaded and validated first; if validation fails, the command exits
+non-zero and the currently running configuration remains active.
+
+Changes to `build.modules.toml` are compile-time changes and still require rebuilding/restarting
+mHyprBar.
+
+`--status` prints the running PID, output count, position/height, compiled modules and current
+left/center/right layout.
+
 ## Run
 
 ~~~bash

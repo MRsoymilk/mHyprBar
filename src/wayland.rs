@@ -1,3 +1,5 @@
+use std::io;
+
 use anyhow::{Context, Result};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -31,11 +33,13 @@ use wayland_client::{
 use crate::{
     config::BarConfig,
     hyprland::{self, MonitorState, Snapshot},
+    ipc::{self, Request},
     modules::ModuleManager,
     render::{self, Renderer},
 };
 
 pub fn run(config: BarConfig) -> Result<()> {
+    let (control_listener, _socket_guard) = ipc::bind_listener()?;
     let background = config.background_rgba()?;
     let mut modules = ModuleManager::load()?;
     modules.refresh_due();
@@ -75,6 +79,7 @@ pub fn run(config: BarConfig) -> Result<()> {
         modules,
         renderer: Renderer::new(),
         hyprland,
+        exit: false,
     };
 
     let mut event_buffer = String::new();
@@ -107,7 +112,44 @@ pub fn run(config: BarConfig) -> Result<()> {
         )
         .context("failed to register Hyprland event socket")?;
 
-    loop {
+    event_loop
+        .handle()
+        .insert_source(
+            Generic::new(control_listener, Interest::READ, Mode::Level),
+            move |_, listener, app| {
+                loop {
+                    match listener.as_ref().accept() {
+                        Ok((mut stream, _)) => {
+                            let response = match ipc::read_request(&mut stream) {
+                                Ok(Some(Request::Reload)) => match app.reload_config() {
+                                    Ok(()) => "ok\n".to_owned(),
+                                    Err(error) => format!("error: {error:#}\n"),
+                                },
+                                Ok(Some(Request::Status)) => app.status_text(),
+                                Ok(Some(Request::Quit)) => {
+                                    app.exit = true;
+                                    "ok\n".to_owned()
+                                }
+                                Ok(None) => "error: unknown request\n".to_owned(),
+                                Err(error) => format!("error: {error:#}\n"),
+                            };
+                            if let Err(error) = ipc::write_response(&mut stream, &response) {
+                                eprintln!("mhyprbar: control response failed: {error:#}");
+                            }
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(error) => {
+                            eprintln!("mhyprbar: control accept failed: {error}");
+                            break;
+                        }
+                    }
+                }
+                Ok(PostAction::Continue)
+            },
+        )
+        .context("failed to register control socket")?;
+
+    while !app.exit {
         let timeout = app.modules.next_timeout();
         event_loop
             .dispatch(Some(timeout), &mut app)
@@ -116,6 +158,8 @@ pub fn run(config: BarConfig) -> Result<()> {
             app.draw_all();
         }
     }
+
+    Ok(())
 }
 
 struct BarSurface {
@@ -142,6 +186,7 @@ struct App {
     modules: ModuleManager,
     renderer: Renderer,
     hyprland: Snapshot,
+    exit: bool,
 }
 
 impl App {
@@ -206,6 +251,65 @@ impl App {
         self.hyprland = Snapshot::refresh()?;
         self.draw_all();
         Ok(())
+    }
+
+    fn reload_config(&mut self) -> Result<()> {
+        let config = crate::validate_config().context("reload validation failed")?;
+        let background = config.background_rgba()?;
+        let mut modules = ModuleManager::load()?;
+        modules.refresh_due();
+
+        let anchor = if config.position == "bottom" {
+            Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT
+        } else {
+            Anchor::TOP | Anchor::LEFT | Anchor::RIGHT
+        };
+        let exclusive_zone = if config.exclusive_zone {
+            config.height as i32
+        } else {
+            0
+        };
+
+        for bar in &mut self.bars {
+            bar.layer.set_anchor(anchor);
+            bar.layer.set_size(0, config.height);
+            bar.layer.set_margin(
+                config.margin_top,
+                config.margin_right,
+                config.margin_bottom,
+                config.margin_left,
+            );
+            bar.layer
+                .set_keyboard_interactivity(KeyboardInteractivity::None);
+            bar.layer.set_exclusive_zone(exclusive_zone);
+            bar.height = config.height;
+            bar.layer.commit();
+        }
+
+        self.config = config;
+        self.background = background;
+        self.modules = modules;
+        self.draw_all();
+        Ok(())
+    }
+
+    fn status_text(&self) -> String {
+        let compiled = crate::modules::compiled()
+            .into_iter()
+            .map(|module| module.name)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "running=1 pid={} outputs={} position={} height={} compiled={} left={} center={} right={}\n",
+            std::process::id(),
+            self.bars.len(),
+            self.config.position,
+            self.config.height,
+            compiled,
+            self.config.left.join(","),
+            self.config.center.join(","),
+            self.config.right.join(","),
+        )
     }
 
     fn monitor_for_bar(&self, index: usize) -> Option<&MonitorState> {
