@@ -410,7 +410,7 @@ impl Renderer {
         let mut y = panel.y + pad;
 
         for (x, w, label) in [
-            (mount_x, mount_w, "Mount"),
+            (mount_x, mount_w, "Path"),
             (bar_x, bar_w, "Usage"),
             (used_x, used_w, "Used / Total"),
             (pct_x, pct_w, "Used"),

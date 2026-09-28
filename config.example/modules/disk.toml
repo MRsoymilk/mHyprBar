@@ -1,5 +1,9 @@
-# The first mount is shown in the bar; all configured mounts appear in the popup.
-mounts = ["/"]
+# The bar shows the filesystem containing the current user's home directory.
+primary = "$HOME"
+
+# Clicking the bar shows these paths.
+paths = ["/var", "/home", "/boot", "/"]
+
 interval_ms = 5000
 
 bar_width = 40

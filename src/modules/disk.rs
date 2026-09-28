@@ -1,4 +1,4 @@
-use std::{ffi::CString, mem::MaybeUninit, time::Duration};
+use std::{env, ffi::CString, mem::MaybeUninit, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -11,6 +11,10 @@ pub const CONFIG_FILE: &str = "modules/disk.toml";
 
 #[derive(Debug, Deserialize)]
 struct DiskConfig {
+    #[serde(default)]
+    primary: Option<String>,
+    #[serde(default)]
+    paths: Vec<String>,
     #[serde(default)]
     mount: Option<String>,
     #[serde(default)]
@@ -67,7 +71,7 @@ pub struct DiskVisual {
 
 pub struct DiskModule {
     config: DiskConfig,
-    mounts: Vec<String>,
+    primary_path: String,
     stats: DiskStats,
     bar_background: [u8; 4],
     bar_fill: [u8; 4],
@@ -95,17 +99,18 @@ impl DiskModule {
             "disk bar_border_width must not be negative"
         );
         config.style.validate()?;
-        let mounts = normalized_mounts(config.mount.as_deref(), &config.mounts)?;
+        let primary_path = resolve_primary_path(&config)?;
+        let _ = configured_paths_from(&config)?;
         let _ = crate::disk_popup::DiskPopupConfig::load()?;
 
         let bar_background = config::parse_rgba(&config.bar_background)?;
         let bar_fill = config::parse_rgba(&config.bar_fill)?;
         let bar_border = config::parse_rgba(&config.bar_border)?;
-        let stats = read_mount_stats(&mounts[0])?;
+        let stats = read_mount_stats(&primary_path)?;
 
         Ok(Self {
             config,
-            mounts,
+            primary_path,
             stats,
             bar_background,
             bar_fill,
@@ -129,7 +134,7 @@ impl StatusModule for DiskModule {
     }
 
     fn sample(&mut self) -> Result<String> {
-        self.stats = read_mount_stats(&self.mounts[0])?;
+        self.stats = read_mount_stats(&self.primary_path)?;
         self.revision = self.revision.wrapping_add(1);
         Ok(String::new())
     }
@@ -153,38 +158,69 @@ impl StatusModule for DiskModule {
 
 pub(crate) fn configured_mounts() -> Result<Vec<String>> {
     let config: DiskConfig = config::load_module(NAME)?;
-    normalized_mounts(config.mount.as_deref(), &config.mounts)
+    configured_paths_from(&config)
 }
 
-pub(crate) fn read_mount_stats(mount: &str) -> Result<DiskStats> {
-    let mount_c = CString::new(mount).context("disk mount must not contain NUL bytes")?;
+pub(crate) fn read_mount_stats(path: &str) -> Result<DiskStats> {
+    let resolved = resolve_path(path)?;
+    let mount_c =
+        CString::new(resolved.as_str()).context("disk path must not contain NUL bytes")?;
     let mut stats = MaybeUninit::<libc::statvfs>::uninit();
     let rc = unsafe { libc::statvfs(mount_c.as_ptr(), stats.as_mut_ptr()) };
-    ensure!(rc == 0, "statvfs failed for {mount}");
+    ensure!(rc == 0, "statvfs failed for {resolved}");
     let stats = unsafe { stats.assume_init() };
 
     let total_bytes = stats.f_blocks as u128 * stats.f_frsize as u128;
     let available_bytes = stats.f_bavail as u128 * stats.f_frsize as u128;
-    ensure!(total_bytes > 0, "filesystem {mount} has zero size");
+    ensure!(total_bytes > 0, "filesystem {resolved} has zero size");
 
     Ok(DiskStats {
-        mount: mount.to_owned(),
+        mount: if path == "$HOME" || path == "~" {
+            resolved
+        } else {
+            path.to_owned()
+        },
         total_bytes,
         available_bytes,
     })
 }
 
-fn normalized_mounts(legacy_mount: Option<&str>, mounts: &[String]) -> Result<Vec<String>> {
-    let result = if mounts.is_empty() {
-        vec![legacy_mount.unwrap_or("/").to_owned()]
+fn resolve_primary_path(config: &DiskConfig) -> Result<String> {
+    if let Some(primary) = config.primary.as_deref() {
+        return resolve_path(primary);
+    }
+    if let Some(first) = config.paths.first() {
+        return resolve_path(first);
+    }
+    if let Some(first) = config.mounts.first() {
+        return resolve_path(first);
+    }
+    resolve_path(config.mount.as_deref().unwrap_or("$HOME"))
+}
+
+fn configured_paths_from(config: &DiskConfig) -> Result<Vec<String>> {
+    let result = if !config.paths.is_empty() {
+        config.paths.clone()
+    } else if !config.mounts.is_empty() {
+        config.mounts.clone()
+    } else if let Some(mount) = config.mount.as_ref() {
+        vec![mount.clone()]
     } else {
-        mounts.to_vec()
+        vec!["/".into()]
     };
     ensure!(
-        result.iter().all(|mount| !mount.is_empty()),
-        "disk mounts must not contain empty paths"
+        result.iter().all(|path| !path.is_empty()),
+        "disk paths must not contain empty values"
     );
     Ok(result)
+}
+
+fn resolve_path(path: &str) -> Result<String> {
+    if path == "$HOME" || path == "~" {
+        return env::var("HOME").context("HOME is not set for disk module");
+    }
+    ensure!(!path.is_empty(), "disk path must not be empty");
+    Ok(path.to_owned())
 }
 
 fn default_interval_ms() -> u64 {
@@ -217,18 +253,13 @@ fn default_bar_border() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_mounts, read_mount_stats};
+    use super::{read_mount_stats, resolve_path};
 
     #[test]
-    fn supports_legacy_mount_and_mount_list() {
-        assert_eq!(
-            normalized_mounts(Some("/home"), &[]).expect("legacy"),
-            vec!["/home"]
-        );
-        assert_eq!(
-            normalized_mounts(None, &["/".into(), "/home".into()]).expect("list"),
-            vec!["/", "/home"]
-        );
+    fn resolves_home_path() {
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(resolve_path("$HOME").expect("home"), home);
+        assert_eq!(resolve_path("~").expect("tilde"), home);
     }
 
     #[test]
