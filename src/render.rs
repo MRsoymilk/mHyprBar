@@ -345,6 +345,191 @@ impl Renderer {
         Ok(())
     }
 
+    #[cfg(mhypr_module = "clock")]
+    pub fn draw_clock_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::clock_popup::ClockPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let today_background = cfg.today_background_rgba()?;
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let pad = cfg.padding;
+        let content_x = panel.x + pad;
+        let content_w = (panel.w - pad * 2).max(7);
+        let mut title_style = cfg.style.clone();
+        title_style.font_size = 15.5;
+        let mut summary_style = cfg.style.clone();
+        summary_style.font_size = 10.0;
+        summary_style.foreground = cfg.weekday_foreground.clone();
+        let mut weekday_style = cfg.style.clone();
+        weekday_style.font_size = 9.5;
+        weekday_style.foreground = cfg.weekday_foreground.clone();
+        let mut adjacent_style = cfg.style.clone();
+        adjacent_style.foreground = cfg.adjacent_foreground.clone();
+        let mut today_style = cfg.style.clone();
+        today_style.foreground = cfg.today_foreground.clone();
+
+        let mut y = panel.y + pad;
+        let month_title = model.month_title();
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w - 64,
+                h: 26,
+            },
+            &month_title,
+            &title_style,
+            0,
+            0,
+        )?;
+
+        let time_text = model.time_text();
+        let time_w = estimate_text_width(&time_text, &title_style).max(1);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x + content_w - time_w,
+                y,
+                w: time_w,
+                h: 26,
+            },
+            &time_text,
+            &title_style,
+            0,
+            0,
+        )?;
+
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y: y + 24,
+                w: content_w,
+                h: cfg.header_height - 24,
+            },
+            &model.date_summary(),
+            &summary_style,
+            0,
+            0,
+        )?;
+        y = y.saturating_add(cfg.header_height);
+
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: 1,
+            },
+            separator,
+        );
+        y = y.saturating_add(1);
+
+        let weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        let column_w = (content_w / 7).max(1);
+        for (column, label) in weekdays.iter().enumerate() {
+            let x = content_x + column as i32 * column_w;
+            let text_w = estimate_text_width(label, &weekday_style)
+                .min(column_w)
+                .max(1);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: x + (column_w - text_w).max(0) / 2,
+                    y,
+                    w: text_w,
+                    h: cfg.weekday_height,
+                },
+                label,
+                &weekday_style,
+                0,
+                0,
+            )?;
+        }
+        y = y.saturating_add(cfg.weekday_height);
+
+        for (index, cell) in model.cells.iter().enumerate() {
+            let row = index / 7;
+            let column = index % 7;
+            let cell_x = content_x + column as i32 * column_w;
+            let cell_y = y + row as i32 * cfg.cell_height;
+            let mark_size = column_w.min(cfg.cell_height).clamp(1, 28);
+
+            if cell.today {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: cell_x + (column_w - mark_size).max(0) / 2,
+                        y: cell_y + (cfg.cell_height - mark_size).max(0) / 2,
+                        w: mark_size,
+                        h: mark_size,
+                    },
+                    today_background,
+                );
+            }
+
+            let style = if cell.today {
+                &today_style
+            } else if cell.in_month {
+                &cfg.style
+            } else {
+                &adjacent_style
+            };
+            let text = cell.day.to_string();
+            let text_w = estimate_text_width(&text, style).min(column_w).max(1);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: cell_x + (column_w - text_w).max(0) / 2,
+                    y: cell_y,
+                    w: text_w,
+                    h: cfg.cell_height,
+                },
+                &text,
+                style,
+                0,
+                0,
+            )?;
+        }
+
+        Ok(())
+    }
+
     #[cfg(mhypr_module = "cpu")]
     pub fn draw_cpu_popup(
         &mut self,
@@ -1348,6 +1533,10 @@ impl Renderer {
                 ModuleVisual::Battery(battery) => {
                     self.draw_battery(canvas, width, height, rect, &view, battery)?;
                 }
+                #[cfg(mhypr_module = "clock")]
+                ModuleVisual::Clock(clock) => {
+                    self.draw_clock(canvas, width, height, rect, &view, clock)?;
+                }
                 #[cfg(mhypr_module = "cpu")]
                 ModuleVisual::Cpu(cpu) => {
                     self.draw_cpu(canvas, width, height, rect, &view, cpu)?;
@@ -1476,6 +1665,107 @@ impl Renderer {
             style,
             0,
             padding_y,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "clock")]
+    fn draw_clock(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        clock: &crate::modules::clock::ClockVisual,
+    ) -> Result<()> {
+        let padding_x = view.style.padding_x.max(0);
+        let padding_y = view.style.padding_y.max(0);
+        let inner_w = rect.w.saturating_sub(padding_x.saturating_mul(2)).max(1);
+        let inner_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+
+        let mut time_style = view.style.clone();
+        time_style.font_size = clock.time_font_size;
+
+        if clock.date_text.is_empty() {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: rect.x + padding_x,
+                    y: rect.y,
+                    w: inner_w,
+                    h: rect.h,
+                },
+                &clock.time_text,
+                &time_style,
+                0,
+                padding_y,
+            )?;
+            return Ok(());
+        }
+
+        let mut date_style = view.style.clone();
+        date_style.font_size = clock.date_font_size;
+        date_style.foreground = "#9AA0AA".into();
+
+        let date_h = (clock.date_font_size * 1.25).ceil() as i32;
+        let time_h = (clock.time_font_size * 1.25).ceil() as i32;
+        let content_h = date_h
+            .saturating_add(clock.row_gap)
+            .saturating_add(time_h)
+            .min(inner_h);
+        let start_y = rect
+            .y
+            .saturating_add(padding_y)
+            .saturating_add((inner_h - content_h).max(0) / 2);
+
+        let date_w = estimate_text_width(&clock.date_text, &date_style)
+            .min(inner_w)
+            .max(1);
+        let date_x = rect
+            .x
+            .saturating_add(padding_x)
+            .saturating_add((inner_w - date_w).max(0) / 2);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: date_x,
+                y: start_y,
+                w: date_w,
+                h: date_h,
+            },
+            &clock.date_text,
+            &date_style,
+            0,
+            0,
+        )?;
+
+        let time_y = start_y.saturating_add(date_h).saturating_add(clock.row_gap);
+        let time_w = estimate_text_width(&clock.time_text, &time_style)
+            .min(inner_w)
+            .max(1);
+        let time_x = rect
+            .x
+            .saturating_add(padding_x)
+            .saturating_add((inner_w - time_w).max(0) / 2);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: time_x,
+                y: time_y,
+                w: time_w,
+                h: time_h,
+            },
+            &clock.time_text,
+            &time_style,
+            0,
+            0,
         )?;
         Ok(())
     }
@@ -1996,6 +2286,22 @@ fn module_width(view: &ModuleView<'_>) -> i32 {
             .max(1);
     }
 
+    #[cfg(mhypr_module = "clock")]
+    if let ModuleVisual::Clock(clock) = &view.visual {
+        let style = view.style;
+        let mut time_style = style.clone();
+        time_style.font_size = clock.time_font_size;
+        let mut date_style = style.clone();
+        date_style.font_size = clock.date_font_size;
+        let time_width = estimate_text_width(&clock.time_text, &time_style);
+        let date_width = estimate_text_width(&clock.date_text, &date_style);
+        let content = time_width.max(date_width);
+        return style
+            .min_width
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
+    }
+
     #[cfg(mhypr_module = "cpu")]
     if let ModuleVisual::Cpu(cpu) = &view.visual {
         let style = view.style;
@@ -2241,6 +2547,7 @@ fn blend_pixel_rgba(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, 
 
 #[cfg(any(
     mhypr_module = "battery",
+    mhypr_module = "clock",
     mhypr_module = "cpu",
     mhypr_module = "disk",
     mhypr_module = "memory"

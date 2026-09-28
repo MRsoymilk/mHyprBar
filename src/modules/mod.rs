@@ -37,6 +37,8 @@ pub enum ModuleVisual {
     Text,
     #[cfg(mhypr_module = "battery")]
     Battery(battery::BatteryVisual),
+    #[cfg(mhypr_module = "clock")]
+    Clock(clock::ClockVisual),
     #[cfg(mhypr_module = "cpu")]
     Cpu(cpu::CpuVisual),
     #[cfg(mhypr_module = "disk")]
