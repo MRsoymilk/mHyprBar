@@ -16,23 +16,53 @@ pub enum Request {
     Reload,
     Status,
     Quit,
+    TrayList,
+    TrayMenuOpen { index: usize },
+    TrayMenuClick { token: u64, node_id: i32 },
 }
 
 impl Request {
-    pub fn as_bytes(self) -> &'static [u8] {
+    pub fn encode(self) -> String {
         match self {
-            Self::Reload => b"reload\n",
-            Self::Status => b"status\n",
-            Self::Quit => b"quit\n",
+            Self::Reload => "reload\n".into(),
+            Self::Status => "status\n".into(),
+            Self::Quit => "quit\n".into(),
+            Self::TrayList => "tray-list\n".into(),
+            Self::TrayMenuOpen { index } => format!("tray-menu-open {index}\n"),
+            Self::TrayMenuClick { token, node_id } => {
+                format!("tray-menu-click {token} {node_id}\n")
+            }
         }
     }
 
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        match std::str::from_utf8(bytes).ok()?.trim() {
+        let text = std::str::from_utf8(bytes).ok()?.trim();
+        match text {
             "reload" => Some(Self::Reload),
             "status" => Some(Self::Status),
             "quit" => Some(Self::Quit),
-            _ => None,
+            "tray-list" => Some(Self::TrayList),
+            _ => {
+                let mut fields = text.split_whitespace();
+                match fields.next()? {
+                    "tray-menu-open" => {
+                        let index = fields.next()?.parse().ok()?;
+                        if fields.next().is_some() {
+                            return None;
+                        }
+                        Some(Self::TrayMenuOpen { index })
+                    }
+                    "tray-menu-click" => {
+                        let token = fields.next()?.parse().ok()?;
+                        let node_id = fields.next()?.parse().ok()?;
+                        if fields.next().is_some() {
+                            return None;
+                        }
+                        Some(Self::TrayMenuClick { token, node_id })
+                    }
+                    _ => None,
+                }
+            }
         }
     }
 }
@@ -46,8 +76,9 @@ pub fn request(request: Request) -> Result<String> {
     let path = socket_path()?;
     let mut stream = UnixStream::connect(&path)
         .with_context(|| format!("failed to connect to {}", path.display()))?;
+    let encoded = request.encode();
     stream
-        .write_all(request.as_bytes())
+        .write_all(encoded.as_bytes())
         .with_context(|| format!("failed to write to {}", path.display()))?;
     stream
         .shutdown(Shutdown::Write)
@@ -90,7 +121,7 @@ pub fn bind_listener() -> Result<(UnixListener, SocketGuard)> {
 }
 
 pub fn read_request(stream: &mut UnixStream) -> Result<Option<Request>> {
-    let mut buffer = [0_u8; 64];
+    let mut buffer = [0_u8; 128];
     let size = stream
         .read(&mut buffer)
         .context("failed to read control request")?;
@@ -114,6 +145,27 @@ mod tests {
         assert_eq!(Request::parse(b"reload\n"), Some(Request::Reload));
         assert_eq!(Request::parse(b" status \n"), Some(Request::Status));
         assert_eq!(Request::parse(b"quit"), Some(Request::Quit));
+        assert_eq!(Request::parse(b"tray-list"), Some(Request::TrayList));
+        assert_eq!(
+            Request::parse(b"tray-menu-open 3\n"),
+            Some(Request::TrayMenuOpen { index: 3 })
+        );
+        assert_eq!(
+            Request::parse(b"tray-menu-click 42 -7\n"),
+            Some(Request::TrayMenuClick {
+                token: 42,
+                node_id: -7,
+            })
+        );
         assert_eq!(Request::parse(b"unknown\n"), None);
+    }
+
+    #[test]
+    fn round_trips_tray_menu_click() {
+        let request = Request::TrayMenuClick {
+            token: 123,
+            node_id: 9,
+        };
+        assert_eq!(Request::parse(request.encode().as_bytes()), Some(request));
     }
 }

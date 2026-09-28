@@ -146,16 +146,21 @@ A module named in `bar.toml` must also be enabled in `build.modules.toml`.
 
 ## System tray
 
-The `tray` module implements a StatusNotifierHost and provides a StatusNotifierWatcher fallback
-when the session has no watcher. It is event-driven through the same calloop loop as Wayland.
+The `tray` module implements the StatusNotifierWatcher + StatusNotifierHost pair and is
+event-driven through the same calloop loop as Wayland.
 
-Phase 1 supports:
+Current tray interaction supports:
 
 - dynamic item registration/removal/update;
 - SNI `IconPixmap` (ARGB32) rendered directly into the existing wl_shm buffer;
 - `NeedsAttention` pixmaps;
-- left-click `Activate`;
-- `ItemIsMenu` items via their `ContextMenu` method;
+- left-click `Activate` with monitor-relative positions converted to screen coordinates;
+- right-click DBusMenu lists rendered with mHyprMenu; items are routed back to the running bar by
+  numeric menu generation + DBusMenu node id;
+- fallback `ContextMenu(x, y)` for items that do not expose a DBusMenu tree;
+- middle-click `SecondaryActivate`;
+- horizontal/vertical wheel forwarding through `Scroll`;
+- `ItemIsMenu` items prefer their menu;
 - hidden passive items by default.
 
 ~~~toml
@@ -171,7 +176,10 @@ theme icons use `magick` directly. This keeps GTK/Qt/SVG/image-decoding crates o
 Rust dependency graph. If those optional tools are unavailable, the item falls back without
 crashing the bar.
 
-DBusMenu rendering inside mHyprMenu remains follow-up work.
+The DBusMenu bridge starts mHyprMenu in forced one-shot mode with a temporary runtime
+configuration under `$XDG_RUNTIME_DIR`. First-level and second-level menus remain cascading;
+deeper DBusMenu levels are flattened into the second level with `›` prefixes. Separators and
+check/radio state are preserved in the generated labels.
 
 `mhyprbar --status` reports `tray_items=N`, which is useful for distinguishing an empty tray
 from a rendering problem.
@@ -222,6 +230,8 @@ A running bar listens on `$XDG_RUNTIME_DIR/mhyprbar.sock` with user-only permiss
 ~~~bash
 mhyprbar --status
 mhyprbar --reload
+mhyprbar --tray-list
+mhyprbar --tray-menu 0
 mhyprbar --quit
 ~~~
 
@@ -234,6 +244,10 @@ mHyprBar.
 
 `--status` prints the running PID, output count, position/height, tray item count, compiled
 modules and current left/center/right layout.
+
+`--tray-list` prints the current visual tray order with index, title, menu availability and SNI
+status. `--tray-menu N` opens item `N`'s DBusMenu through mHyprMenu and is intended as a
+debug/control equivalent of right-clicking that tray icon.
 
 ## Run
 

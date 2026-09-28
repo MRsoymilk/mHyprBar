@@ -13,7 +13,10 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
-        pointer::{BTN_LEFT, PointerEvent, PointerEventKind, PointerHandler},
+        pointer::{
+            AxisScroll, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, PointerEvent, PointerEventKind,
+            PointerHandler,
+        },
     },
     shell::{
         WaylandSurface,
@@ -174,6 +177,29 @@ pub fn run(config: BarConfig) -> Result<()> {
                                     Err(error) => format!("error: {error:#}\n"),
                                 },
                                 Ok(Some(Request::Status)) => app.status_text(),
+                                Ok(Some(Request::TrayList)) => app
+                                    .tray
+                                    .as_ref()
+                                    .map(TrayState::list_text)
+                                    .unwrap_or_default(),
+                                Ok(Some(Request::TrayMenuOpen { index })) => {
+                                    match app.tray.as_mut() {
+                                        Some(tray) => match tray.open_menu_index(index) {
+                                            Ok(()) => "ok\n".to_owned(),
+                                            Err(error) => format!("error: {error:#}\n"),
+                                        },
+                                        None => "error: tray is unavailable\n".to_owned(),
+                                    }
+                                }
+                                Ok(Some(Request::TrayMenuClick { token, node_id })) => {
+                                    match app.tray.as_mut() {
+                                        Some(tray) => match tray.menu_click(token, node_id) {
+                                            Ok(()) => "ok\n".to_owned(),
+                                            Err(error) => format!("error: {error:#}\n"),
+                                        },
+                                        None => "error: tray is unavailable\n".to_owned(),
+                                    }
+                                }
                                 Ok(Some(Request::Quit)) => {
                                     app.exit = true;
                                     "ok\n".to_owned()
@@ -217,6 +243,30 @@ struct BarSurface {
     width: u32,
     height: u32,
     configured: bool,
+}
+
+#[derive(Clone, Copy)]
+enum TrayPointerAction {
+    Primary,
+    ContextMenu,
+    Secondary,
+    ScrollHorizontal(i32),
+    ScrollVertical(i32),
+}
+
+fn axis_scroll_delta(scroll: AxisScroll) -> i32 {
+    if scroll.value120 != 0 {
+        scroll.value120
+    } else if scroll.discrete != 0 {
+        scroll.discrete.saturating_mul(120)
+    } else if scroll.absolute != 0.0 {
+        scroll
+            .absolute
+            .round()
+            .clamp(i32::MIN as f64, i32::MAX as f64) as i32
+    } else {
+        0
+    }
 }
 
 struct App {
@@ -463,7 +513,75 @@ impl App {
         true
     }
 
-    fn activate_module_at(&mut self, bar_index: usize, x: f64) {
+    fn screen_position_for_bar(&self, bar_index: usize, x: f64, y: f64) -> (i32, i32) {
+        let Some(bar) = self.bars.get(bar_index) else {
+            return (x.round() as i32, y.round() as i32);
+        };
+        let Some(monitor) = self.monitor_for_bar(bar_index) else {
+            return (x.round() as i32, y.round() as i32);
+        };
+
+        let origin_y = if self.config.position == "bottom" {
+            monitor
+                .y
+                .saturating_add(monitor.height)
+                .saturating_sub(bar.height as i32)
+        } else {
+            monitor.y
+        };
+        (
+            monitor.x.saturating_add(x.round() as i32),
+            origin_y.saturating_add(y.round() as i32),
+        )
+    }
+
+    fn tray_action_at(
+        &mut self,
+        bar_index: usize,
+        x: f64,
+        y: f64,
+        action: TrayPointerAction,
+    ) -> bool {
+        let Some(bar) = self.bars.get(bar_index) else {
+            return false;
+        };
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar.width, workspace_visible, &self.config, &self.modules)
+        else {
+            return false;
+        };
+        if hit.name != "tray" {
+            return false;
+        }
+
+        let offset_x = hit.offset_x;
+        let (screen_x, screen_y) = self.screen_position_for_bar(bar_index, x, y);
+        let Some(tray) = self.tray.as_mut() else {
+            return true;
+        };
+        let result = match action {
+            TrayPointerAction::Primary => tray.activate_at(offset_x, screen_x, screen_y),
+            TrayPointerAction::ContextMenu => tray.context_menu_at(offset_x, screen_x, screen_y),
+            TrayPointerAction::Secondary => {
+                tray.secondary_activate_at(offset_x, screen_x, screen_y)
+            }
+            TrayPointerAction::ScrollHorizontal(delta) => {
+                tray.scroll_at(offset_x, delta, "horizontal")
+            }
+            TrayPointerAction::ScrollVertical(delta) => tray.scroll_at(offset_x, delta, "vertical"),
+        };
+        if let Err(error) = result {
+            eprintln!("mhyprbar: tray action failed: {error:#}");
+        }
+        true
+    }
+
+    fn activate_module_at(&mut self, bar_index: usize, x: f64, y: f64) {
+        if self.tray_action_at(bar_index, x, y, TrayPointerAction::Primary) {
+            return;
+        }
+
         let Some(bar) = self.bars.get(bar_index) else {
             return;
         };
@@ -474,15 +592,6 @@ impl App {
             return;
         };
         let name = hit.name.to_owned();
-
-        if name == "tray" {
-            if let Some(tray) = self.tray.as_mut()
-                && let Err(error) = tray.activate_at(hit.offset_x)
-            {
-                eprintln!("mhyprbar: tray action failed: {error:#}");
-            }
-            return;
-        }
 
         match self.modules.activate(&name) {
             Ok(true) => self.draw_all(),
@@ -626,11 +735,57 @@ impl PointerHandler for App {
                 continue;
             };
 
-            if let PointerEventKind::Press { button, .. } = event.kind
-                && button == BTN_LEFT
-                && !self.activate_workspace(index, event.position.0)
-            {
-                self.activate_module_at(index, event.position.0);
+            match event.kind {
+                PointerEventKind::Press { button, .. } => match button {
+                    BTN_LEFT => {
+                        if !self.activate_workspace(index, event.position.0) {
+                            self.activate_module_at(index, event.position.0, event.position.1);
+                        }
+                    }
+                    BTN_RIGHT => {
+                        let _ = self.tray_action_at(
+                            index,
+                            event.position.0,
+                            event.position.1,
+                            TrayPointerAction::ContextMenu,
+                        );
+                    }
+                    BTN_MIDDLE => {
+                        let _ = self.tray_action_at(
+                            index,
+                            event.position.0,
+                            event.position.1,
+                            TrayPointerAction::Secondary,
+                        );
+                    }
+                    _ => {}
+                },
+                PointerEventKind::Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
+                    let horizontal = axis_scroll_delta(horizontal);
+                    if horizontal != 0 {
+                        let _ = self.tray_action_at(
+                            index,
+                            event.position.0,
+                            event.position.1,
+                            TrayPointerAction::ScrollHorizontal(horizontal),
+                        );
+                    }
+
+                    let vertical = axis_scroll_delta(vertical);
+                    if vertical != 0 {
+                        let _ = self.tray_action_at(
+                            index,
+                            event.position.0,
+                            event.position.1,
+                            TrayPointerAction::ScrollVertical(vertical),
+                        );
+                    }
+                }
+                _ => {}
             }
         }
     }

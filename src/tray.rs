@@ -9,8 +9,9 @@ mod enabled {
         time::Duration,
     };
 
-    use anyhow::{Context, Result, bail};
-    use rustsni::{IconPixmap, ItemId, TrayHost, TrayItem};
+    use anyhow::{Context, Result, bail, ensure};
+    use rustsni::{IconPixmap, ItemId, MenuNode, TrayHost, TrayItem};
+    use serde::Serialize;
 
     use crate::modules::tray::TrayConfig;
 
@@ -20,11 +21,33 @@ mod enabled {
         pixels: Vec<u8>,
     }
 
+    #[derive(Serialize)]
+    struct DynamicMenuConfig {
+        items: Vec<DynamicMenuItem>,
+    }
+
+    #[derive(Serialize)]
+    struct DynamicMenuItem {
+        label: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        children: Vec<DynamicMenuItem>,
+        #[serde(skip_serializing_if = "is_false")]
+        separator_before: bool,
+    }
+
+    fn is_false(value: &bool) -> bool {
+        !*value
+    }
+
     pub struct TrayState {
         host: TrayHost,
         config: TrayConfig,
         order: Vec<ItemId>,
         theme_icons: HashMap<ItemId, CachedThemeIcon>,
+        menu_target: Option<(u64, ItemId)>,
+        next_menu_generation: u64,
     }
 
     pub struct TrayIconView<'a> {
@@ -36,6 +59,7 @@ mod enabled {
     impl TrayState {
         pub fn new() -> Result<Self> {
             let config = TrayConfig::load()?;
+            cleanup_dynamic_menu_dirs();
             let mut host = None;
             let mut last_error = None;
             for attempt in 0..6 {
@@ -65,6 +89,8 @@ mod enabled {
                 config,
                 order: Vec::new(),
                 theme_icons: HashMap::new(),
+                menu_target: None,
+                next_menu_generation: 0,
             };
             let _ = state.poll();
             state.sync_order();
@@ -103,6 +129,56 @@ mod enabled {
 
         pub fn len(&self) -> usize {
             self.order.len()
+        }
+
+        pub fn list_text(&self) -> String {
+            let mut output = String::new();
+            for (index, id) in self.order.iter().enumerate() {
+                let Some(item) = self.host.items().get(id) else {
+                    continue;
+                };
+                let title = if item.title.trim().is_empty() {
+                    if item.item_id.trim().is_empty() {
+                        id.0.as_str()
+                    } else {
+                        item.item_id.as_str()
+                    }
+                } else {
+                    item.title.as_str()
+                };
+                let has_menu = item.has_menu();
+                output.push_str(&format!(
+                    "{index}\t{title}\tmenu={}\tstatus={}\n",
+                    u8::from(has_menu),
+                    item.status
+                ));
+            }
+            output
+        }
+
+        pub fn open_menu_index(&mut self, index: usize) -> Result<()> {
+            let id = self
+                .order
+                .get(index)
+                .cloned()
+                .with_context(|| format!("tray index {index} is out of range"))?;
+            let nodes = self
+                .host
+                .get_menu(&id, 0)
+                .context("failed to read tray DBusMenu")?;
+            ensure!(
+                !nodes.is_empty(),
+                "tray item {index} has no DBusMenu entries"
+            );
+
+            self.next_menu_generation = self.next_menu_generation.wrapping_add(1).max(1);
+            let generation = self.next_menu_generation;
+            self.menu_target = Some((generation, id));
+            if let Err(error) = launch_dynamic_menu(&nodes, generation) {
+                self.menu_target = None;
+                return Err(error);
+            }
+            Ok(())
         }
 
         pub fn width(&self) -> i32 {
@@ -168,7 +244,7 @@ mod enabled {
             None
         }
 
-        pub fn activate_at(&mut self, x: i32) -> Result<bool> {
+        pub fn activate_at(&mut self, x: i32, screen_x: i32, screen_y: i32) -> Result<bool> {
             let Some(id) = self.item_at(x).cloned() else {
                 return Ok(false);
             };
@@ -178,14 +254,88 @@ mod enabled {
                 .get(&id)
                 .is_some_and(|item| item.item_is_menu);
             if is_menu {
-                self.host
-                    .context_menu(&id, 0, 0)
-                    .context("tray ContextMenu failed")?;
-            } else {
-                self.host
-                    .activate(&id, 0, 0)
-                    .context("tray Activate failed")?;
+                return self.context_menu_at(x, screen_x, screen_y);
             }
+
+            self.host
+                .activate(&id, screen_x, screen_y)
+                .context("tray Activate failed")?;
+            Ok(true)
+        }
+
+        pub fn context_menu_at(&mut self, x: i32, screen_x: i32, screen_y: i32) -> Result<bool> {
+            let Some(id) = self.item_at(x).cloned() else {
+                return Ok(false);
+            };
+
+            let has_dbus_menu = self.host.items().get(&id).is_some_and(TrayItem::has_menu);
+            if has_dbus_menu {
+                let nodes = self
+                    .host
+                    .get_menu(&id, 0)
+                    .context("failed to read tray DBusMenu")?;
+                if !nodes.is_empty() {
+                    self.next_menu_generation = self.next_menu_generation.wrapping_add(1).max(1);
+                    let generation = self.next_menu_generation;
+                    self.menu_target = Some((generation, id.clone()));
+                    if let Err(error) = launch_dynamic_menu(&nodes, generation) {
+                        self.menu_target = None;
+                        return Err(error);
+                    }
+                    return Ok(true);
+                }
+            }
+
+            self.host
+                .context_menu(&id, screen_x, screen_y)
+                .context("tray ContextMenu failed")?;
+            Ok(true)
+        }
+
+        pub fn menu_click(&mut self, generation: u64, node_id: i32) -> Result<()> {
+            let Some((active_generation, id)) = self.menu_target.as_ref() else {
+                bail!("no active tray menu");
+            };
+            ensure!(
+                *active_generation == generation,
+                "stale tray menu generation"
+            );
+            let id = id.clone();
+            ensure!(
+                self.host.items().contains_key(&id),
+                "tray menu item disappeared"
+            );
+            self.menu_target = None;
+            self.host
+                .menu_click(&id, node_id)
+                .context("tray DBusMenu click failed")
+        }
+
+        pub fn secondary_activate_at(
+            &mut self,
+            x: i32,
+            screen_x: i32,
+            screen_y: i32,
+        ) -> Result<bool> {
+            let Some(id) = self.item_at(x).cloned() else {
+                return Ok(false);
+            };
+            self.host
+                .secondary_activate(&id, screen_x, screen_y)
+                .context("tray SecondaryActivate failed")?;
+            Ok(true)
+        }
+
+        pub fn scroll_at(&mut self, x: i32, delta: i32, orientation: &str) -> Result<bool> {
+            if delta == 0 {
+                return Ok(false);
+            }
+            let Some(id) = self.item_at(x).cloned() else {
+                return Ok(false);
+            };
+            self.host
+                .scroll(&id, delta, orientation)
+                .context("tray Scroll failed")?;
             Ok(true)
         }
 
@@ -199,6 +349,13 @@ mod enabled {
                 .collect::<Vec<_>>();
             order.sort_by(|a, b| a.0.cmp(&b.0));
             self.order = order;
+            if self
+                .menu_target
+                .as_ref()
+                .is_some_and(|(_, id)| !self.host.items().contains_key(id))
+            {
+                self.menu_target = None;
+            }
             self.sync_theme_icons();
         }
 
@@ -257,6 +414,230 @@ mod enabled {
                 );
             }
         }
+    }
+
+    fn launch_dynamic_menu(nodes: &[MenuNode], generation: u64) -> Result<()> {
+        let bar_exe = env::current_exe().context("failed to resolve mHyprBar executable")?;
+        let items = build_dynamic_menu_items(nodes, generation, &bar_exe);
+        ensure!(!items.is_empty(), "tray DBusMenu contains no visible items");
+
+        let config = DynamicMenuConfig { items };
+        let source =
+            toml::to_string_pretty(&config).context("failed to serialize tray DBusMenu")?;
+        let config_dir = prepare_dynamic_menu_dir(generation)?;
+        fs::write(config_dir.join("config.toml"), source)
+            .context("failed to write dynamic tray menu config")?;
+
+        let style = resolve_mhyprmenu_style()
+            .context("mHyprMenu style.toml is unavailable for tray menu")?;
+        fs::copy(style, config_dir.join("style.toml"))
+            .context("failed to prepare dynamic tray menu style")?;
+
+        let binary = resolve_mhyprmenu_binary();
+        Command::new(&binary)
+            .arg("--oneshot")
+            .env("MHYPRMENU_CONFIG_DIR", &config_dir)
+            .spawn()
+            .with_context(|| format!("failed to launch {}", binary.display()))?;
+        Ok(())
+    }
+
+    fn build_dynamic_menu_items(
+        nodes: &[MenuNode],
+        generation: u64,
+        bar_exe: &Path,
+    ) -> Vec<DynamicMenuItem> {
+        let mut result = Vec::new();
+        let mut separator_before = false;
+
+        for node in nodes.iter().filter(|node| node.visible) {
+            if is_menu_separator(node) {
+                separator_before = true;
+                continue;
+            }
+
+            let children =
+                flatten_dynamic_children(&node.children, generation, bar_exe, String::new());
+            let command = if children.is_empty() && node.enabled {
+                Some(menu_callback_command(bar_exe, generation, node.id))
+            } else {
+                None
+            };
+            result.push(DynamicMenuItem {
+                label: decorated_menu_label(node),
+                command,
+                children,
+                separator_before,
+            });
+            separator_before = false;
+        }
+
+        result
+    }
+
+    fn flatten_dynamic_children(
+        nodes: &[MenuNode],
+        generation: u64,
+        bar_exe: &Path,
+        prefix: String,
+    ) -> Vec<DynamicMenuItem> {
+        let mut result = Vec::new();
+        let mut separator_before = false;
+
+        for node in nodes.iter().filter(|node| node.visible) {
+            if is_menu_separator(node) {
+                separator_before = true;
+                continue;
+            }
+
+            let label = decorated_menu_label(node);
+            if !node.children.is_empty() {
+                let next_prefix = if prefix.is_empty() {
+                    format!("{label} › ")
+                } else {
+                    format!("{prefix}{label} › ")
+                };
+                let mut nested =
+                    flatten_dynamic_children(&node.children, generation, bar_exe, next_prefix);
+                if separator_before && let Some(first) = nested.first_mut() {
+                    first.separator_before = true;
+                }
+                result.extend(nested);
+                separator_before = false;
+                continue;
+            }
+
+            let label = if prefix.is_empty() {
+                label
+            } else {
+                format!("{prefix}{label}")
+            };
+            result.push(DynamicMenuItem {
+                label,
+                command: node
+                    .enabled
+                    .then(|| menu_callback_command(bar_exe, generation, node.id)),
+                children: Vec::new(),
+                separator_before,
+            });
+            separator_before = false;
+        }
+
+        result
+    }
+
+    fn is_menu_separator(node: &MenuNode) -> bool {
+        node.label.trim().is_empty() && node.children.is_empty()
+    }
+
+    fn decorated_menu_label(node: &MenuNode) -> String {
+        let label = strip_menu_mnemonic(&node.label);
+        match (node.toggle_type.as_str(), node.toggle_state) {
+            ("checkmark", 1) => format!("✓ {label}"),
+            ("radio", 1) => format!("● {label}"),
+            ("checkmark" | "radio", 0) => format!("  {label}"),
+            _ => label,
+        }
+    }
+
+    fn strip_menu_mnemonic(label: &str) -> String {
+        let mut result = String::with_capacity(label.len());
+        let mut chars = label.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '_' {
+                if chars.peek() == Some(&'_') {
+                    result.push('_');
+                    let _ = chars.next();
+                }
+                continue;
+            }
+            result.push(ch);
+        }
+        result
+    }
+
+    fn menu_callback_command(bar_exe: &Path, generation: u64, node_id: i32) -> String {
+        format!(
+            "{} --tray-menu-click {generation} {node_id}",
+            shell_quote(&bar_exe.to_string_lossy())
+        )
+    }
+
+    fn shell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+
+    fn cleanup_dynamic_menu_dirs() {
+        let Some(runtime_dir) = env::var_os("XDG_RUNTIME_DIR") else {
+            return;
+        };
+        let Ok(entries) = fs::read_dir(runtime_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("mhyprbar-tray-menu-") {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+
+    fn prepare_dynamic_menu_dir(generation: u64) -> Result<PathBuf> {
+        let runtime_dir = env::var_os("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR is not set")?;
+        let root =
+            PathBuf::from(runtime_dir).join(format!("mhyprbar-tray-menu-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join(generation.to_string());
+        fs::create_dir_all(&dir).context("failed to create dynamic tray menu directory")?;
+        Ok(dir)
+    }
+
+    fn resolve_mhyprmenu_style() -> Option<PathBuf> {
+        if let Some(path) = env::var_os("MHYPRMENU_STYLE") {
+            let path = PathBuf::from(path);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+
+        let user_style = if let Some(config_home) = env::var_os("XDG_CONFIG_HOME") {
+            PathBuf::from(config_home).join("mhyprmenu/style.toml")
+        } else {
+            PathBuf::from(env::var_os("HOME")?).join(".config/mhyprmenu/style.toml")
+        };
+        if user_style.is_file() {
+            return Some(user_style);
+        }
+
+        let project_style = mhypr_root_from_current_exe()?
+            .join("mHyprMenu")
+            .join("style.example.toml");
+        project_style.is_file().then_some(project_style)
+    }
+
+    fn resolve_mhyprmenu_binary() -> PathBuf {
+        if let Some(path) = env::var_os("MHYPRMENU_BIN") {
+            return PathBuf::from(path);
+        }
+
+        if let Some(root) = mhypr_root_from_current_exe() {
+            let binary = root.join("mHyprMenu").join("target/release/mhyprmenu");
+            if binary.is_file() {
+                return binary;
+            }
+        }
+
+        PathBuf::from("mhyprmenu")
+    }
+
+    fn mhypr_root_from_current_exe() -> Option<PathBuf> {
+        let exe = env::current_exe().ok()?;
+        exe.parent()?
+            .parent()?
+            .parent()?
+            .parent()
+            .map(Path::to_path_buf)
     }
 
     fn icon_name(item: &TrayItem) -> &str {
@@ -451,9 +832,12 @@ mod enabled {
     mod tests {
         use std::path::Path;
 
-        use rustsni::{IconPixmap, ItemId, ToolTip, TrayItem};
+        use rustsni::{IconPixmap, ItemId, MenuNode, ToolTip, TrayItem};
 
-        use super::{choose_pixmap, icon_path_score, rgba_to_native_argb};
+        use super::{
+            DynamicMenuConfig, build_dynamic_menu_items, choose_pixmap, icon_path_score,
+            rgba_to_native_argb,
+        };
 
         fn test_item() -> TrayItem {
             TrayItem {
@@ -519,6 +903,47 @@ mod enabled {
                 assert_eq!(value, vec![0xFF, 0x11, 0x22, 0x33]);
             }
         }
+
+        #[test]
+        fn builds_dynamic_menu_callbacks() {
+            let nodes = vec![MenuNode {
+                id: 10,
+                label: "_Connections".into(),
+                enabled: true,
+                visible: true,
+                icon_name: String::new(),
+                icon_data: Vec::new(),
+                toggle_type: String::new(),
+                toggle_state: -1,
+                is_submenu: true,
+                children: vec![MenuNode {
+                    id: 11,
+                    label: "_Server".into(),
+                    enabled: true,
+                    visible: true,
+                    icon_name: String::new(),
+                    icon_data: Vec::new(),
+                    toggle_type: "checkmark".into(),
+                    toggle_state: 1,
+                    is_submenu: false,
+                    children: Vec::new(),
+                }],
+            }];
+
+            let items = build_dynamic_menu_items(&nodes, 77, Path::new("/tmp/mhyprbar"));
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].label, "Connections");
+            assert_eq!(items[0].children.len(), 1);
+            assert_eq!(items[0].children[0].label, "✓ Server");
+            assert_eq!(
+                items[0].children[0].command.as_deref(),
+                Some("'/tmp/mhyprbar' --tray-menu-click 77 11")
+            );
+
+            let source =
+                toml::to_string_pretty(&DynamicMenuConfig { items }).expect("serialize menu");
+            assert!(source.contains("[[items.children]]"));
+        }
     }
 }
 
@@ -549,12 +974,46 @@ impl TrayState {
         Ok(false)
     }
 
-    pub fn activate_at(&mut self, _x: i32) -> anyhow::Result<bool> {
+    pub fn activate_at(&mut self, _x: i32, _screen_x: i32, _screen_y: i32) -> anyhow::Result<bool> {
         Ok(false)
+    }
+
+    pub fn context_menu_at(
+        &mut self,
+        _x: i32,
+        _screen_x: i32,
+        _screen_y: i32,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    pub fn secondary_activate_at(
+        &mut self,
+        _x: i32,
+        _screen_x: i32,
+        _screen_y: i32,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    pub fn scroll_at(&mut self, _x: i32, _delta: i32, _orientation: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    pub fn menu_click(&mut self, _generation: u64, _node_id: i32) -> anyhow::Result<()> {
+        Ok(())
     }
 
     pub fn len(&self) -> usize {
         0
+    }
+
+    pub fn list_text(&self) -> String {
+        String::new()
+    }
+
+    pub fn open_menu_index(&mut self, _index: usize) -> anyhow::Result<()> {
+        anyhow::bail!("tray module is not compiled")
     }
 
     pub fn width(&self) -> i32 {

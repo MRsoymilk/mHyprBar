@@ -15,6 +15,12 @@ use serde::Deserialize;
 struct MonitorJson {
     id: i32,
     name: String,
+    #[serde(default)]
+    x: i32,
+    #[serde(default)]
+    y: i32,
+    #[serde(default)]
+    height: i32,
     #[serde(rename = "activeWorkspace")]
     active_workspace: WorkspaceRefJson,
 }
@@ -55,6 +61,9 @@ struct WorkspaceJson {
 pub struct MonitorState {
     pub id: i32,
     pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub height: i32,
     pub active_workspace: i32,
 }
 
@@ -76,6 +85,9 @@ impl Snapshot {
             .map(|monitor| MonitorState {
                 id: monitor.id,
                 name: monitor.name,
+                x: monitor.x,
+                y: monitor.y,
+                height: monitor.height,
                 active_workspace: monitor.active_workspace.id,
             })
             .collect();
