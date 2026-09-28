@@ -1529,13 +1529,25 @@ impl Renderer {
             }
 
             match &view.visual {
+                #[cfg(mhypr_module = "audio")]
+                ModuleVisual::Audio(audio) => {
+                    self.draw_audio(canvas, width, height, rect, &view, audio)?;
+                }
                 #[cfg(mhypr_module = "battery")]
                 ModuleVisual::Battery(battery) => {
                     self.draw_battery(canvas, width, height, rect, &view, battery)?;
                 }
+                #[cfg(mhypr_module = "brightness")]
+                ModuleVisual::Brightness(brightness) => {
+                    self.draw_brightness(canvas, width, height, rect, &view, brightness)?;
+                }
                 #[cfg(mhypr_module = "clock")]
                 ModuleVisual::Clock(clock) => {
                     self.draw_clock(canvas, width, height, rect, &view, clock)?;
+                }
+                #[cfg(mhypr_module = "layout")]
+                ModuleVisual::Layout(layout) => {
+                    self.draw_layout(canvas, width, height, rect, &view, layout)?;
                 }
                 #[cfg(mhypr_module = "cpu")]
                 ModuleVisual::Cpu(cpu) => {
@@ -1561,6 +1573,405 @@ impl Renderer {
             }
             x = x.saturating_add(module_width);
         }
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "audio")]
+    fn draw_audio(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        audio: &crate::modules::audio::AudioVisual,
+    ) -> Result<()> {
+        let padding_x = view.style.padding_x.max(0);
+        let padding_y = view.style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+        let icon_size = audio.icon_size.min(content_h).max(7);
+        let icon_x = rect.x.saturating_add(padding_x);
+        let icon_y = rect
+            .y
+            .saturating_add(padding_y)
+            .saturating_add((content_h - icon_size) / 2);
+        let color = if audio.muted {
+            audio.muted_fill
+        } else {
+            audio.fill
+        };
+
+        let body_h = (icon_size / 3).max(3);
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: icon_x,
+                y: icon_y + (icon_size - body_h) / 2,
+                w: 4,
+                h: body_h,
+            },
+            color,
+        );
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: icon_x + 4,
+                y: icon_y + 2,
+                w: 4,
+                h: (icon_size - 4).max(3),
+            },
+            color,
+        );
+
+        if audio.muted {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: icon_x + 10,
+                    y: icon_y + 3,
+                    w: 2,
+                    h: (icon_size - 6).max(3),
+                },
+                color,
+            );
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: icon_x + 8,
+                    y: icon_y + icon_size / 2 - 1,
+                    w: 6,
+                    h: 2,
+                },
+                color,
+            );
+        } else {
+            if audio.percent > 0 {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: icon_x + 10,
+                        y: icon_y + icon_size / 3,
+                        w: 1,
+                        h: (icon_size / 3).max(3),
+                    },
+                    color,
+                );
+            }
+            if audio.percent >= 50 {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: icon_x + 13,
+                        y: icon_y + 2,
+                        w: 1,
+                        h: (icon_size - 4).max(4),
+                    },
+                    color,
+                );
+            }
+        }
+
+        let bar_x = icon_x
+            .saturating_add(icon_size)
+            .saturating_add(audio.text_gap);
+        let bar_y = rect.y + (rect.h - audio.bar_height) / 2;
+        let bar = Rect {
+            x: bar_x,
+            y: bar_y,
+            w: audio.bar_width,
+            h: audio.bar_height,
+        };
+        fill_rect(canvas, width, height, bar, audio.bar_background);
+        let fill_w = ((audio.bar_width as f32 * audio.percent.min(100) as f32 / 100.0).round()
+            as i32)
+            .clamp(0, audio.bar_width);
+        if fill_w > 0 {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: bar.x,
+                    y: bar.y,
+                    w: fill_w,
+                    h: bar.h,
+                },
+                color,
+            );
+        }
+
+        let text_x = bar_x
+            .saturating_add(audio.bar_width)
+            .saturating_add(audio.text_gap);
+        let right = rect.x.saturating_add(rect.w).saturating_sub(padding_x);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: text_x,
+                y: rect.y,
+                w: right.saturating_sub(text_x).max(1),
+                h: rect.h,
+            },
+            &format!("{}%", audio.percent),
+            view.style,
+            0,
+            padding_y,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "brightness")]
+    fn draw_brightness(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        brightness: &crate::modules::brightness::BrightnessVisual,
+    ) -> Result<()> {
+        let padding_x = view.style.padding_x.max(0);
+        let padding_y = view.style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+        let icon_size = brightness.icon_size.min(content_h).max(7);
+        let icon_x = rect.x.saturating_add(padding_x);
+        let icon_y = rect
+            .y
+            .saturating_add(padding_y)
+            .saturating_add((content_h - icon_size) / 2);
+        let cx = icon_x + icon_size / 2;
+        let cy = icon_y + icon_size / 2;
+        let core = 5;
+
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: cx - core / 2,
+                y: cy - core / 2,
+                w: core,
+                h: core,
+            },
+            brightness.fill,
+        );
+        for ray in [
+            Rect {
+                x: cx,
+                y: icon_y,
+                w: 1,
+                h: 3,
+            },
+            Rect {
+                x: cx,
+                y: icon_y + icon_size - 3,
+                w: 1,
+                h: 3,
+            },
+            Rect {
+                x: icon_x,
+                y: cy,
+                w: 3,
+                h: 1,
+            },
+            Rect {
+                x: icon_x + icon_size - 3,
+                y: cy,
+                w: 3,
+                h: 1,
+            },
+        ] {
+            fill_rect(canvas, width, height, ray, brightness.fill);
+        }
+
+        let bar_x = icon_x
+            .saturating_add(icon_size)
+            .saturating_add(brightness.text_gap);
+        let bar = Rect {
+            x: bar_x,
+            y: rect.y + (rect.h - brightness.bar_height) / 2,
+            w: brightness.bar_width,
+            h: brightness.bar_height,
+        };
+        fill_rect(canvas, width, height, bar, brightness.bar_background);
+        let fill_w = ((brightness.bar_width as f32 * brightness.percent.min(100) as f32 / 100.0)
+            .round() as i32)
+            .clamp(0, brightness.bar_width);
+        if fill_w > 0 {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: bar.x,
+                    y: bar.y,
+                    w: fill_w,
+                    h: bar.h,
+                },
+                brightness.fill,
+            );
+        }
+
+        let text_x = bar_x
+            .saturating_add(brightness.bar_width)
+            .saturating_add(brightness.text_gap);
+        let right = rect.x.saturating_add(rect.w).saturating_sub(padding_x);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: text_x,
+                y: rect.y,
+                w: right.saturating_sub(text_x).max(1),
+                h: rect.h,
+            },
+            &format!("{}%", brightness.percent),
+            view.style,
+            0,
+            padding_y,
+        )?;
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "layout")]
+    fn draw_layout(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        layout: &crate::modules::layout::LayoutVisual,
+    ) -> Result<()> {
+        let padding_x = view.style.padding_x.max(0);
+        let padding_y = view.style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+        let icon_h = layout.icon_height.min(content_h).max(5);
+        let icon = Rect {
+            x: rect.x.saturating_add(padding_x),
+            y: rect
+                .y
+                .saturating_add(padding_y)
+                .saturating_add((content_h - icon_h) / 2),
+            w: layout.icon_width,
+            h: icon_h,
+        };
+        let color = view.style.foreground_rgba()?;
+        draw_rect_border(canvas, width, height, icon, color, 1);
+
+        let name = layout.name.to_ascii_lowercase();
+        if name.contains("master") {
+            let split_x = icon.x + (icon.w * 3 / 5);
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: split_x,
+                    y: icon.y + 1,
+                    w: 1,
+                    h: (icon.h - 2).max(1),
+                },
+                color,
+            );
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: split_x + 1,
+                    y: icon.y + icon.h / 2,
+                    w: (icon.x + icon.w - split_x - 2).max(1),
+                    h: 1,
+                },
+                color,
+            );
+        } else if name.contains("scroll") {
+            for numerator in [1, 2] {
+                let split_x = icon.x + icon.w * numerator / 3;
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: split_x,
+                        y: icon.y + 1,
+                        w: 1,
+                        h: (icon.h - 2).max(1),
+                    },
+                    color,
+                );
+            }
+        } else if name.contains("monocle") {
+            draw_rect_border(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: icon.x + 3,
+                    y: icon.y + 3,
+                    w: (icon.w - 6).max(1),
+                    h: (icon.h - 6).max(1),
+                },
+                color,
+                1,
+            );
+        } else {
+            let split_x = icon.x + icon.w / 2;
+            let split_y = icon.y + icon.h / 2;
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: split_x,
+                    y: icon.y + 1,
+                    w: 1,
+                    h: (icon.h - 2).max(1),
+                },
+                color,
+            );
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: split_x + 1,
+                    y: split_y,
+                    w: (icon.x + icon.w - split_x - 2).max(1),
+                    h: 1,
+                },
+                color,
+            );
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: split_x + (icon.w - icon.w / 2) / 2,
+                    y: split_y + 1,
+                    w: 1,
+                    h: (icon.y + icon.h - split_y - 2).max(1),
+                },
+                color,
+            );
+        }
+
         Ok(())
     }
 
@@ -2270,6 +2681,22 @@ fn module_width(view: &ModuleView<'_>) -> i32 {
         return width.max(0);
     }
 
+    #[cfg(mhypr_module = "audio")]
+    if let ModuleVisual::Audio(audio) = &view.visual {
+        let style = view.style;
+        let percent_width = estimate_text_width("150%", style);
+        let content = audio
+            .icon_size
+            .saturating_add(audio.text_gap)
+            .saturating_add(audio.bar_width)
+            .saturating_add(audio.text_gap)
+            .saturating_add(percent_width);
+        return style
+            .min_width
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
+    }
+
     #[cfg(mhypr_module = "battery")]
     if let ModuleVisual::Battery(battery) = &view.visual {
         let style = view.style;
@@ -2280,6 +2707,22 @@ fn module_width(view: &ModuleView<'_>) -> i32 {
             .saturating_add(battery.icon_tip_width)
             .saturating_add(battery.text_gap);
         let content = icon_width.saturating_add(percent_width);
+        return style
+            .min_width
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
+    }
+
+    #[cfg(mhypr_module = "brightness")]
+    if let ModuleVisual::Brightness(brightness) = &view.visual {
+        let style = view.style;
+        let percent_width = estimate_text_width("100%", style);
+        let content = brightness
+            .icon_size
+            .saturating_add(brightness.text_gap)
+            .saturating_add(brightness.bar_width)
+            .saturating_add(brightness.text_gap)
+            .saturating_add(percent_width);
         return style
             .min_width
             .max(content.saturating_add(style.padding_x.saturating_mul(2)))
@@ -2299,6 +2742,19 @@ fn module_width(view: &ModuleView<'_>) -> i32 {
         return style
             .min_width
             .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
+    }
+
+    #[cfg(mhypr_module = "layout")]
+    if let ModuleVisual::Layout(layout) = &view.visual {
+        let style = view.style;
+        return style
+            .min_width
+            .max(
+                layout
+                    .icon_width
+                    .saturating_add(style.padding_x.saturating_mul(2)),
+            )
             .max(1);
     }
 
@@ -2546,10 +3002,13 @@ fn blend_pixel_rgba(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, 
 }
 
 #[cfg(any(
+    mhypr_module = "audio",
     mhypr_module = "battery",
+    mhypr_module = "brightness",
     mhypr_module = "clock",
     mhypr_module = "cpu",
     mhypr_module = "disk",
+    mhypr_module = "layout",
     mhypr_module = "memory"
 ))]
 fn draw_rect_border(

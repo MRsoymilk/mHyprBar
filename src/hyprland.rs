@@ -57,6 +57,13 @@ struct WorkspaceJson {
     monitor: String,
 }
 
+#[cfg(mhypr_module = "layout")]
+#[derive(Clone, Debug, Deserialize)]
+struct ActiveWorkspaceJson {
+    #[serde(rename = "tiledLayout", default)]
+    tiled_layout: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct MonitorState {
     pub id: i32,
@@ -140,6 +147,44 @@ pub fn active_window() -> Result<ActiveWindow> {
         class: window.class,
         title: window.title,
     })
+}
+
+#[cfg(mhypr_module = "layout")]
+pub fn active_layout() -> Result<String> {
+    let raw = request("j/activeworkspace")?;
+    let workspace: ActiveWorkspaceJson =
+        serde_json::from_str(raw.trim()).context("invalid Hyprland activeworkspace JSON")?;
+    if workspace.tiled_layout.trim().is_empty() {
+        Ok("unknown".into())
+    } else {
+        Ok(workspace.tiled_layout)
+    }
+}
+
+#[cfg(mhypr_module = "layout")]
+pub fn set_active_layout(layout: &str) -> Result<()> {
+    ensure_layout_name(layout)?;
+    let layout = lua_quote(layout);
+    let lua = format!(
+        "local w=hl.get_active_workspace(); if w then if w.special then hl.workspace_rule({{ workspace=tostring(w.name), layout={layout} }}) else hl.workspace_rule({{ workspace=\"name:\" .. tostring(w.name), layout={layout} }}) end end"
+    );
+    let response = request(&format!("eval {lua}"))?;
+    if !command_succeeded(&response) {
+        bail!("Hyprland rejected layout request: {}", response.trim());
+    }
+    Ok(())
+}
+
+#[cfg(mhypr_module = "layout")]
+fn ensure_layout_name(layout: &str) -> Result<()> {
+    if layout.is_empty()
+        || !layout
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.'))
+    {
+        bail!("invalid Hyprland layout name");
+    }
+    Ok(())
 }
 
 pub fn event_stream() -> Result<UnixStream> {

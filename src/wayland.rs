@@ -2251,6 +2251,38 @@ impl App {
             Err(error) => eprintln!("mhyprbar: module {name} action failed: {error:#}"),
         }
     }
+
+    fn scroll_module_at(&mut self, bar_index: usize, x: f64, delta: i32) -> bool {
+        if delta == 0 {
+            return false;
+        }
+        let Some(bar) = self.bars.get(bar_index) else {
+            return false;
+        };
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar.width, workspace_visible, &self.config, &self.modules)
+        else {
+            return false;
+        };
+        if hit.name == "tray" {
+            return false;
+        }
+
+        let name = hit.name.to_owned();
+        let direction = if delta < 0 { 1 } else { -1 };
+        match self.modules.scroll(&name, direction) {
+            Ok(true) => {
+                self.draw_all();
+                true
+            }
+            Ok(false) => false,
+            Err(error) => {
+                eprintln!("mhyprbar: module {name} scroll failed: {error:#}");
+                true
+            }
+        }
+    }
 }
 
 impl CompositorHandler for App {
@@ -2861,13 +2893,17 @@ impl PointerHandler for App {
                     }
 
                     let vertical = axis_scroll_delta(vertical);
-                    if vertical != 0 {
-                        let _ = self.tray_action_at(
+                    if vertical != 0
+                        && !self.tray_action_at(
                             index,
                             event.position.0,
                             event.position.1,
                             TrayPointerAction::ScrollVertical(vertical),
-                        );
+                        )
+                    {
+                        let _ = self.scroll_module_at(index, event.position.0, vertical);
+                    } else if vertical == 0 && horizontal != 0 {
+                        let _ = self.scroll_module_at(index, event.position.0, horizontal);
                     }
                 }
                 _ => {}

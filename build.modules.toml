@@ -8,11 +8,13 @@
 menu = true
 active_window = true
 clock = true
+layout = true
 cpu = true
 memory = true
 network = true
 # Optional integrations. Enable only when the corresponding desktop service/tool is available.
-audio = false
+audio = true
+brightness = true
 mpris = true
 disk = true
 battery = true

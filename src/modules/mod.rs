@@ -10,12 +10,16 @@ pub mod active_window;
 pub mod audio;
 #[cfg(mhypr_module = "battery")]
 pub mod battery;
+#[cfg(mhypr_module = "brightness")]
+pub mod brightness;
 #[cfg(mhypr_module = "clock")]
 pub mod clock;
 #[cfg(mhypr_module = "cpu")]
 pub mod cpu;
 #[cfg(mhypr_module = "disk")]
 pub mod disk;
+#[cfg(mhypr_module = "layout")]
+pub mod layout;
 #[cfg(mhypr_module = "memory")]
 pub mod memory;
 #[cfg(mhypr_module = "menu")]
@@ -35,10 +39,16 @@ pub struct CompiledModule {
 
 pub enum ModuleVisual {
     Text,
+    #[cfg(mhypr_module = "audio")]
+    Audio(audio::AudioVisual),
     #[cfg(mhypr_module = "battery")]
     Battery(battery::BatteryVisual),
+    #[cfg(mhypr_module = "brightness")]
+    Brightness(brightness::BrightnessVisual),
     #[cfg(mhypr_module = "clock")]
     Clock(clock::ClockVisual),
+    #[cfg(mhypr_module = "layout")]
+    Layout(layout::LayoutVisual),
     #[cfg(mhypr_module = "cpu")]
     Cpu(cpu::CpuVisual),
     #[cfg(mhypr_module = "disk")]
@@ -59,6 +69,9 @@ pub(super) trait StatusModule {
         0
     }
     fn activate(&mut self) -> Result<bool> {
+        Ok(false)
+    }
+    fn scroll(&mut self, _direction: i32) -> Result<bool> {
         Ok(false)
     }
 }
@@ -152,6 +165,8 @@ impl ModuleManager {
             RuntimeModule::new(Box::new(active_window::ActiveWindowModule::load()?)),
             #[cfg(mhypr_module = "clock")]
             RuntimeModule::new(Box::new(clock::ClockModule::load()?)),
+            #[cfg(mhypr_module = "layout")]
+            RuntimeModule::new(Box::new(layout::LayoutModule::load()?)),
             #[cfg(mhypr_module = "cpu")]
             RuntimeModule::new(Box::new(cpu::CpuModule::load()?)),
             #[cfg(mhypr_module = "memory")]
@@ -160,6 +175,8 @@ impl ModuleManager {
             RuntimeModule::new(Box::new(network::NetworkModule::load()?)),
             #[cfg(mhypr_module = "audio")]
             RuntimeModule::new(Box::new(audio::AudioModule::load()?)),
+            #[cfg(mhypr_module = "brightness")]
+            RuntimeModule::new(Box::new(brightness::BrightnessModule::load()?)),
             #[cfg(mhypr_module = "mpris")]
             RuntimeModule::new(Box::new(mpris::MprisModule::load()?)),
             #[cfg(mhypr_module = "disk")]
@@ -216,10 +233,33 @@ impl ModuleManager {
     }
 
     pub fn activate(&mut self, name: &str) -> Result<bool> {
-        self.modules
+        let Some(module) = self
+            .modules
             .iter_mut()
             .find(|module| module.module.name() == name)
-            .map_or(Ok(false), |module| module.module.activate())
+        else {
+            return Ok(false);
+        };
+        let handled = module.module.activate()?;
+        if handled {
+            module.refresh_now(Instant::now());
+        }
+        Ok(handled)
+    }
+
+    pub fn scroll(&mut self, name: &str, direction: i32) -> Result<bool> {
+        let Some(module) = self
+            .modules
+            .iter_mut()
+            .find(|module| module.module.name() == name)
+        else {
+            return Ok(false);
+        };
+        let handled = module.module.scroll(direction)?;
+        if handled {
+            module.refresh_now(Instant::now());
+        }
+        Ok(handled)
     }
 
     pub fn view(&self, name: &str) -> Option<ModuleView<'_>> {
@@ -252,6 +292,11 @@ pub fn compiled() -> Vec<CompiledModule> {
             name: clock::NAME,
             config_file: clock::CONFIG_FILE,
         },
+        #[cfg(mhypr_module = "layout")]
+        CompiledModule {
+            name: layout::NAME,
+            config_file: layout::CONFIG_FILE,
+        },
         #[cfg(mhypr_module = "cpu")]
         CompiledModule {
             name: cpu::NAME,
@@ -271,6 +316,11 @@ pub fn compiled() -> Vec<CompiledModule> {
         CompiledModule {
             name: audio::NAME,
             config_file: audio::CONFIG_FILE,
+        },
+        #[cfg(mhypr_module = "brightness")]
+        CompiledModule {
+            name: brightness::NAME,
+            config_file: brightness::CONFIG_FILE,
         },
         #[cfg(mhypr_module = "mpris")]
         CompiledModule {

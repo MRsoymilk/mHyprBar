@@ -1,15 +1,13 @@
-backend = "auto"
-target = "auto"
-interval_ms = 500
+device = "auto"
+interval_ms = 750
 step_percent = 5
-max_percent = 150
-icon_size = 15
+min_percent = 5
+icon_size = 14
 bar_width = 32
 bar_height = 4
 text_gap = 4
 bar_background = "#303030"
-fill = "#8AB4FF"
-muted_fill = "#FF5C6C"
+fill = "#FFD84A"
 
 [style]
 foreground = "#F2F2F2"
