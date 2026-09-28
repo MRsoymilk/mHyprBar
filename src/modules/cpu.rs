@@ -86,8 +86,8 @@ impl CpuModule {
             "cpu graph_width must be greater than zero"
         );
         ensure!(
-            config.graph_height > 0,
-            "cpu graph_height must be greater than zero"
+            config.graph_height >= 0,
+            "cpu graph_height must not be negative"
         );
         ensure!(
             config.step_width > 0,
@@ -250,7 +250,7 @@ fn default_graph_width() -> i32 {
 }
 
 fn default_graph_height() -> i32 {
-    18
+    0
 }
 
 fn default_step_width() -> i32 {

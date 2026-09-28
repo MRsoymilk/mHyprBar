@@ -504,7 +504,11 @@ impl Renderer {
 
         let mut cursor_x = rect.x.saturating_add(padding_x);
         if cpu.graph_enabled {
-            let graph_h = cpu.graph_height.min(content_h).max(1);
+            let graph_h = if cpu.graph_height == 0 {
+                content_h
+            } else {
+                cpu.graph_height.min(content_h).max(1)
+            };
             let graph_y = rect
                 .y
                 .saturating_add(padding_y)

@@ -122,7 +122,7 @@ interval_ms = 1000
 warn_percent = 85.0
 graph_enabled = true
 graph_width = 50
-graph_height = 18
+graph_height = 0 # 0 = fill the available bar height
 step_width = 2
 step_spacing = 1
 show_percent = false
