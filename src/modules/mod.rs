@@ -33,11 +33,23 @@ pub struct CompiledModule {
     pub config_file: &'static str,
 }
 
+pub enum ModuleVisual {
+    Text,
+    #[cfg(mhypr_module = "cpu")]
+    Cpu(cpu::CpuVisual),
+}
+
 pub(super) trait StatusModule {
     fn name(&self) -> &'static str;
     fn interval(&self) -> Option<Duration>;
     fn style(&self) -> &ModuleStyle;
     fn sample(&mut self) -> Result<String>;
+    fn visual(&self) -> ModuleVisual {
+        ModuleVisual::Text
+    }
+    fn visual_revision(&self) -> u64 {
+        0
+    }
     fn activate(&mut self) -> Result<bool> {
         Ok(false)
     }
@@ -49,17 +61,20 @@ struct RuntimeModule {
     next_update: Option<Instant>,
     last_error: Option<String>,
     width_override: Option<i32>,
+    visual_revision: u64,
 }
 
 impl RuntimeModule {
     fn new(module: Box<dyn StatusModule>) -> Self {
         let text = module.name().to_uppercase();
+        let visual_revision = module.visual_revision();
         Self {
             module,
             text,
             next_update: Some(Instant::now()),
             last_error: None,
             width_override: None,
+            visual_revision,
         }
     }
 
@@ -78,11 +93,14 @@ impl RuntimeModule {
         let changed = match self.module.sample() {
             Ok(text) => {
                 self.last_error = None;
+                let visual_revision = self.module.visual_revision();
+                let visual_changed = visual_revision != self.visual_revision;
+                self.visual_revision = visual_revision;
                 if text != self.text {
                     self.text = text;
                     true
                 } else {
-                    false
+                    visual_changed
                 }
             }
             Err(error) => {
@@ -110,6 +128,7 @@ pub struct ModuleView<'a> {
     pub text: &'a str,
     pub style: &'a ModuleStyle,
     pub width_override: Option<i32>,
+    pub visual: ModuleVisual,
 }
 
 pub struct ModuleManager {
@@ -203,6 +222,7 @@ impl ModuleManager {
                 text: &module.text,
                 style: module.module.style(),
                 width_override: module.width_override,
+                visual: module.module.visual(),
             })
     }
 }

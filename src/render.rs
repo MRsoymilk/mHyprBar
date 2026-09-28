@@ -6,7 +6,7 @@ use crate::tray_popup::{TrayPopupHit, TrayPopupModel, TrayPopupRect};
 use crate::{
     config::{BarConfig, ModuleStyle, WorkspacesConfig},
     hyprland::{MonitorState, Snapshot},
-    modules::{ModuleManager, ModuleView},
+    modules::{ModuleManager, ModuleView, ModuleVisual},
     tray::TrayState,
 };
 
@@ -467,15 +467,145 @@ impl Renderer {
                 fill_rect(canvas, width, height, rect, background);
             }
 
-            if name == "tray" {
-                if let Some(tray) = tray {
-                    self.draw_tray(canvas, width, height, rect, tray, &view);
+            match &view.visual {
+                #[cfg(mhypr_module = "cpu")]
+                ModuleVisual::Cpu(cpu) => {
+                    self.draw_cpu(canvas, width, height, rect, &view, cpu)?;
                 }
-            } else {
-                self.draw_text(canvas, width, height, rect, &view)?;
+                ModuleVisual::Text => {
+                    if name == "tray" {
+                        if let Some(tray) = tray {
+                            self.draw_tray(canvas, width, height, rect, tray, &view);
+                        }
+                    } else {
+                        self.draw_text(canvas, width, height, rect, &view)?;
+                    }
+                }
             }
             x = x.saturating_add(module_width);
         }
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "cpu")]
+    fn draw_cpu(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        cpu: &crate::modules::cpu::CpuVisual,
+    ) -> Result<()> {
+        let style = view.style;
+        let padding_x = style.padding_x.max(0);
+        let padding_y = style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+
+        let mut cursor_x = rect.x.saturating_add(padding_x);
+        if cpu.graph_enabled {
+            let graph_h = cpu.graph_height.min(content_h).max(1);
+            let graph_y = rect
+                .y
+                .saturating_add(padding_y)
+                .saturating_add((content_h - graph_h) / 2);
+            let graph_rect = Rect {
+                x: cursor_x,
+                y: graph_y,
+                w: cpu.graph_width,
+                h: graph_h,
+            };
+
+            if cpu.graph_background[3] > 0 {
+                fill_rect(canvas, width, height, graph_rect, cpu.graph_background);
+            }
+
+            let stride = cpu.step_width.saturating_add(cpu.step_spacing).max(1);
+            let used_width = if cpu.history.is_empty() {
+                0
+            } else {
+                (cpu.history.len() as i32)
+                    .saturating_mul(stride)
+                    .saturating_sub(cpu.step_spacing)
+            };
+            let mut step_x = graph_rect
+                .x
+                .saturating_add((graph_rect.w - used_width).max(0));
+
+            for &sample in &cpu.history {
+                let bar_h = if sample <= 0.0 {
+                    0
+                } else {
+                    ((sample.clamp(0.0, 100.0) / 100.0) * graph_h as f32)
+                        .round()
+                        .max(1.0) as i32
+                }
+                .min(graph_h);
+
+                let top = graph_y.saturating_add(graph_h.saturating_sub(bar_h));
+                for row in 0..bar_h {
+                    let y = top.saturating_add(row);
+                    let level = if graph_h <= 1 {
+                        1.0
+                    } else {
+                        1.0 - (y - graph_y) as f32 / (graph_h - 1) as f32
+                    };
+                    let color = cpu_graph_color(cpu, level);
+                    fill_rect(
+                        canvas,
+                        width,
+                        height,
+                        Rect {
+                            x: step_x,
+                            y,
+                            w: cpu.step_width.min(
+                                graph_rect
+                                    .x
+                                    .saturating_add(graph_rect.w)
+                                    .saturating_sub(step_x),
+                            ),
+                            h: 1,
+                        },
+                        color,
+                    );
+                }
+
+                step_x = step_x.saturating_add(stride);
+                if step_x >= graph_rect.x.saturating_add(graph_rect.w) {
+                    break;
+                }
+            }
+
+            cursor_x =
+                cursor_x
+                    .saturating_add(cpu.graph_width)
+                    .saturating_add(if view.text.is_empty() {
+                        0
+                    } else {
+                        cpu.text_gap
+                    });
+        }
+
+        if !view.text.is_empty() {
+            let right = rect.x.saturating_add(rect.w).saturating_sub(padding_x);
+            let text_w = right.saturating_sub(cursor_x).max(1);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: cursor_x,
+                    y: rect.y,
+                    w: text_w,
+                    h: rect.h,
+                },
+                view.text,
+                style,
+                0,
+                padding_y,
+            )?;
+        }
+
         Ok(())
     }
 
@@ -535,11 +665,32 @@ impl Renderer {
         rect: Rect,
         view: &ModuleView<'_>,
     ) -> Result<()> {
-        let style = view.style;
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            rect,
+            view.text,
+            view.style,
+            view.style.padding_x.max(0),
+            view.style.padding_y.max(0),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text_content(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        text: &str,
+        style: &ModuleStyle,
+        padding_x: i32,
+        padding_y: i32,
+    ) -> Result<()> {
         let foreground = style.foreground_rgba()?;
         let color = Color::rgba(foreground[0], foreground[1], foreground[2], foreground[3]);
-        let padding_x = style.padding_x.max(0);
-        let padding_y = style.padding_y.max(0);
         let text_x = rect.x.saturating_add(padding_x);
         let text_y = rect.y.saturating_add(padding_y);
         let text_w = rect.w.saturating_sub(padding_x.saturating_mul(2)).max(1) as f32;
@@ -558,7 +709,7 @@ impl Renderer {
             name => Family::Name(name),
         };
         let attrs = Attrs::new().family(family);
-        buffer.set_text(view.text, &attrs, Shaping::Advanced, None);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
 
         buffer.draw(
             &mut self.fonts,
@@ -677,6 +828,32 @@ fn module_width(view: &ModuleView<'_>) -> i32 {
     if let Some(width) = view.width_override {
         return width.max(0);
     }
+
+    #[cfg(mhypr_module = "cpu")]
+    if let ModuleVisual::Cpu(cpu) = &view.visual {
+        let style = view.style;
+        let graph_width = if cpu.graph_enabled {
+            cpu.graph_width
+        } else {
+            0
+        };
+        let text_width = if view.text.is_empty() {
+            0
+        } else {
+            estimate_text_width(view.text, style)
+        };
+        let gap = if graph_width > 0 && text_width > 0 {
+            cpu.text_gap
+        } else {
+            0
+        };
+        let content = graph_width.saturating_add(gap).saturating_add(text_width);
+        return style
+            .min_width
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
+    }
+
     if view.text.is_empty() {
         return 0;
     }
@@ -694,6 +871,35 @@ fn estimate_text_width(text: &str, style: &ModuleStyle) -> i32 {
         .map(|ch| if ch.is_ascii() { 0.62_f32 } else { 1.0_f32 })
         .sum::<f32>();
     (em * style.font_size).ceil() as i32
+}
+
+#[cfg(mhypr_module = "cpu")]
+fn cpu_graph_color(cpu: &crate::modules::cpu::CpuVisual, level: f32) -> [u8; 4] {
+    let level = level.clamp(0.0, 1.0);
+    let warn = (cpu.warn_percent / 100.0).clamp(0.55, 0.95);
+    let mid_start = (warn * 0.55).clamp(0.25, warn);
+
+    if level <= mid_start {
+        cpu.graph_low
+    } else if level <= warn {
+        let span = (warn - mid_start).max(f32::EPSILON);
+        lerp_rgba(cpu.graph_low, cpu.graph_mid, (level - mid_start) / span)
+    } else {
+        let span = (1.0 - warn).max(f32::EPSILON);
+        lerp_rgba(cpu.graph_mid, cpu.graph_high, (level - warn) / span)
+    }
+}
+
+#[cfg(mhypr_module = "cpu")]
+fn lerp_rgba(from: [u8; 4], to: [u8; 4], t: f32) -> [u8; 4] {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| ((a as f32 + (b as f32 - a as f32) * t).round()) as u8;
+    [
+        mix(from[0], to[0]),
+        mix(from[1], to[1]),
+        mix(from[2], to[2]),
+        mix(from[3], to[3]),
+    ]
 }
 
 #[allow(clippy::too_many_arguments)]
