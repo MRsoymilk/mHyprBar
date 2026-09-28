@@ -1,6 +1,8 @@
 mod config;
 #[cfg(mhypr_module = "cpu")]
 mod cpu_popup;
+#[cfg(mhypr_module = "disk")]
+mod disk_popup;
 mod hyprland;
 mod ipc;
 #[cfg(mhypr_module = "memory")]

@@ -367,6 +367,168 @@ impl Renderer {
         self.draw_text_content(canvas, width, height, rect, text, style, 0, 0)
     }
 
+    #[cfg(mhypr_module = "disk")]
+    pub fn draw_disk_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::disk_popup::DiskPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let hover = cfg.hover_rgba()?;
+        let bar_bg = cfg.bar_background_rgba()?;
+        let bar_fill = cfg.bar_fill_rgba()?;
+        let bar_border = cfg.bar_border_rgba()?;
+
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let row_h = cfg.row_height;
+        let pad = cfg.padding;
+        let mount_w = 92;
+        let gap = 8;
+        let bar_w = cfg.bar_width.min((panel.w - pad * 2 - 230).max(1));
+        let used_w = 104;
+        let pct_w = 48;
+        let mount_x = panel.x + pad;
+        let bar_x = mount_x + mount_w + gap;
+        let used_x = bar_x + bar_w + gap;
+        let pct_x = used_x + used_w + gap;
+        let mut y = panel.y + pad;
+
+        for (x, w, label) in [
+            (mount_x, mount_w, "Mount"),
+            (bar_x, bar_w, "Usage"),
+            (used_x, used_w, "Used / Total"),
+            (pct_x, pct_w, "Used"),
+        ] {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect { x, y, w, h: row_h },
+                label,
+                &cfg.style,
+                0,
+                0,
+            )?;
+        }
+        y = y.saturating_add(row_h);
+
+        for (index, stats) in model.rows.iter().enumerate() {
+            let row = Rect {
+                x: panel.x + pad,
+                y,
+                w: panel.w - pad * 2,
+                h: row_h,
+            };
+            if model.hovered_row == Some(index) {
+                fill_rect(canvas, width, height, row, hover);
+            }
+
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: mount_x,
+                    y,
+                    w: mount_w,
+                    h: row_h,
+                },
+                &stats.mount,
+                &cfg.style,
+                0,
+                0,
+            )?;
+
+            let bar_h = (row_h - 12).max(6);
+            let bar = Rect {
+                x: bar_x,
+                y: y + (row_h - bar_h) / 2,
+                w: bar_w,
+                h: bar_h,
+            };
+            fill_rect(canvas, width, height, bar, bar_bg);
+            let inner = Rect {
+                x: bar.x + 1,
+                y: bar.y + 1,
+                w: (bar.w - 2).max(0),
+                h: (bar.h - 2).max(0),
+            };
+            let fill_w = ((inner.w as f32 * stats.percent().clamp(0.0, 100.0) / 100.0).round()
+                as i32)
+                .clamp(0, inner.w);
+            if fill_w > 0 {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: inner.x,
+                        y: inner.y,
+                        w: fill_w,
+                        h: inner.h,
+                    },
+                    bar_fill,
+                );
+            }
+            draw_rect_border(canvas, width, height, bar, bar_border, 1);
+
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: used_x,
+                    y,
+                    w: used_w,
+                    h: row_h,
+                },
+                &format!(
+                    "{} / {}",
+                    crate::disk_popup::format_bytes(stats.used_bytes()),
+                    crate::disk_popup::format_bytes(stats.total_bytes)
+                ),
+                &cfg.style,
+                0,
+                0,
+            )?;
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: pct_x,
+                    y,
+                    w: pct_w,
+                    h: row_h,
+                },
+                &format!("{:.0}%", stats.percent()),
+                &cfg.style,
+                0,
+                0,
+            )?;
+
+            y = y.saturating_add(row_h);
+        }
+
+        Ok(())
+    }
+
     #[cfg(mhypr_module = "memory")]
     pub fn draw_memory_popup(
         &mut self,
@@ -982,6 +1144,10 @@ impl Renderer {
                 ModuleVisual::Cpu(cpu) => {
                     self.draw_cpu(canvas, width, height, rect, &view, cpu)?;
                 }
+                #[cfg(mhypr_module = "disk")]
+                ModuleVisual::Disk(disk) => {
+                    self.draw_disk(canvas, width, height, rect, &view, disk);
+                }
                 #[cfg(mhypr_module = "memory")]
                 ModuleVisual::Memory(memory) => {
                     self.draw_memory(canvas, width, height, rect, &view, memory)?;
@@ -1125,6 +1291,64 @@ impl Renderer {
         }
 
         Ok(())
+    }
+
+    #[cfg(mhypr_module = "disk")]
+    fn draw_disk(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        disk: &crate::modules::disk::DiskVisual,
+    ) {
+        let padding_x = view.style.padding_x.max(0);
+        let padding_y = view.style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+        let bar_h = disk.bar_height.min(content_h).max(1);
+        let bar = Rect {
+            x: rect.x.saturating_add(padding_x),
+            y: rect
+                .y
+                .saturating_add(padding_y)
+                .saturating_add((content_h - bar_h) / 2),
+            w: disk.bar_width,
+            h: bar_h,
+        };
+
+        fill_rect(canvas, width, height, bar, disk.bar_background);
+        let border = disk.bar_border_width.min((bar.w.min(bar.h) / 2).max(0));
+        let inner = Rect {
+            x: bar.x.saturating_add(border),
+            y: bar.y.saturating_add(border),
+            w: bar.w.saturating_sub(border.saturating_mul(2)).max(0),
+            h: bar.h.saturating_sub(border.saturating_mul(2)).max(0),
+        };
+        let fill_w = ((inner.w as f32 * disk.percent.clamp(0.0, 100.0) / 100.0).round() as i32)
+            .clamp(0, inner.w);
+        if fill_w > 0 {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    w: fill_w,
+                    h: inner.h,
+                },
+                disk.bar_fill,
+            );
+        }
+        draw_rect_border(
+            canvas,
+            width,
+            height,
+            bar,
+            disk.bar_border,
+            disk.bar_border_width,
+        );
     }
 
     #[cfg(mhypr_module = "memory")]
@@ -1468,6 +1692,18 @@ fn module_width(view: &ModuleView<'_>) -> i32 {
             .max(1);
     }
 
+    #[cfg(mhypr_module = "disk")]
+    if let ModuleVisual::Disk(disk) = &view.visual {
+        let style = view.style;
+        return style
+            .min_width
+            .max(
+                disk.bar_width
+                    .saturating_add(style.padding_x.saturating_mul(2)),
+            )
+            .max(1);
+    }
+
     #[cfg(mhypr_module = "memory")]
     if let ModuleVisual::Memory(memory) = &view.visual {
         let style = view.style;
@@ -1611,7 +1847,7 @@ fn blend_pixel_rgba(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, 
     blend_at(&mut canvas[offset..offset + 4], rgba);
 }
 
-#[cfg(any(mhypr_module = "cpu", mhypr_module = "memory"))]
+#[cfg(any(mhypr_module = "cpu", mhypr_module = "disk", mhypr_module = "memory"))]
 fn draw_rect_border(
     canvas: &mut [u8],
     width: u32,
