@@ -4,8 +4,8 @@ device = "auto"
 interval_ms = 5000
 empty_text = ""
 
-icon_width = 26
-icon_height = 14
+icon_width = 30
+icon_height = 18
 icon_tip_width = 3
 icon_border_width = 2
 text_gap = 6

@@ -395,11 +395,11 @@ fn default_interval_ms() -> u64 {
 }
 
 fn default_icon_width() -> i32 {
-    26
+    30
 }
 
 fn default_icon_height() -> i32 {
-    14
+    18
 }
 
 fn default_icon_tip_width() -> i32 {

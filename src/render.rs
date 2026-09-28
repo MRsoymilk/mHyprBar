@@ -301,6 +301,7 @@ impl Renderer {
         y = y.saturating_add(1);
 
         let rows = [
+            ("Capacity", model.capacity_text()),
             ("Time remaining", model.time_remaining_text()),
             ("Battery health", model.health_text()),
             ("Design capacity", model.design_capacity_text()),
@@ -1404,11 +1405,16 @@ impl Renderer {
         let border = battery
             .icon_border_width
             .min((body.w.min(body.h) / 2).max(1));
+        draw_rect_border(canvas, width, height, body, color, border);
+
+        // Keep a visible dark inset between the colored shell and the charge fill.
+        let inner_gap = 2;
+        let inset = border.saturating_add(inner_gap);
         let inner = Rect {
-            x: body.x.saturating_add(border),
-            y: body.y.saturating_add(border),
-            w: body.w.saturating_sub(border.saturating_mul(2)).max(0),
-            h: body.h.saturating_sub(border.saturating_mul(2)).max(0),
+            x: body.x.saturating_add(inset),
+            y: body.y.saturating_add(inset),
+            w: body.w.saturating_sub(inset.saturating_mul(2)).max(0),
+            h: body.h.saturating_sub(inset.saturating_mul(2)).max(0),
         };
         let fill_w = ((inner.w as f32 * battery.capacity.clamp(0.0, 100.0) / 100.0).round() as i32)
             .clamp(0, inner.w);
@@ -1426,15 +1432,15 @@ impl Renderer {
                 color,
             );
         }
-        draw_rect_border(canvas, width, height, body, color, border);
 
-        let tip_h = (icon_h / 2).max(3);
+        let tip_gap = 1;
+        let tip_h = (icon_h / 2).max(4);
         fill_rect(
             canvas,
             width,
             height,
             Rect {
-                x: body.x.saturating_add(body.w),
+                x: body.x.saturating_add(body.w).saturating_add(tip_gap),
                 y: body.y.saturating_add((icon_h - tip_h) / 2),
                 w: battery.icon_tip_width,
                 h: tip_h,
@@ -1446,7 +1452,10 @@ impl Renderer {
             draw_battery_bolt(canvas, width, height, inner, [20, 24, 20, 255]);
         }
 
-        let icon_total = battery.icon_width.saturating_add(battery.icon_tip_width);
+        let icon_total = battery
+            .icon_width
+            .saturating_add(1)
+            .saturating_add(battery.icon_tip_width);
         let text_x = body
             .x
             .saturating_add(icon_total)
@@ -1977,6 +1986,7 @@ fn module_width(view: &ModuleView<'_>) -> i32 {
         let percent_width = estimate_text_width("100%", style);
         let icon_width = battery
             .icon_width
+            .saturating_add(1)
             .saturating_add(battery.icon_tip_width)
             .saturating_add(battery.text_gap);
         let content = icon_width.saturating_add(percent_width);

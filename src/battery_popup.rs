@@ -202,7 +202,11 @@ impl BatteryPopupModel {
             .saturating_add(8)
             .saturating_add(self.config.status_height)
             .saturating_add(1)
-            .saturating_add(self.config.row_height.saturating_mul(4))
+            .saturating_add(self.config.row_height.saturating_mul(5))
+    }
+
+    pub fn capacity_text(&self) -> String {
+        format!("{:.0}%", self.stats.capacity)
     }
 
     pub fn time_remaining_text(&self) -> String {
