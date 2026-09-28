@@ -4,6 +4,8 @@ mod ipc;
 mod modules;
 mod render;
 mod tray;
+#[cfg(mhypr_module = "tray")]
+mod tray_popup;
 mod wayland;
 
 use std::{collections::HashSet, env};
@@ -98,22 +100,6 @@ fn run() -> Result<()> {
             run_control(ipc::Request::TrayTooltipOpen { index })?;
         }
         Some("--quit") => run_control(ipc::Request::Quit)?,
-        Some("--tray-menu-click") => {
-            let token = args
-                .next()
-                .context("--tray-menu-click requires a token")?
-                .parse()
-                .context("invalid tray menu token")?;
-            let node_id = args
-                .next()
-                .context("--tray-menu-click requires a node id")?
-                .parse()
-                .context("invalid tray menu node id")?;
-            if args.next().is_some() {
-                bail!("too many arguments for --tray-menu-click");
-            }
-            run_control(ipc::Request::TrayMenuClick { token, node_id })?;
-        }
         Some("--list-modules") => print_modules(),
         Some("--check-config") => {
             validate_config()?;

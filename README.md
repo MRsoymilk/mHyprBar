@@ -155,8 +155,7 @@ Current tray interaction supports:
 - SNI `IconPixmap` (ARGB32) rendered directly into the existing wl_shm buffer;
 - `NeedsAttention` pixmaps;
 - left-click `Activate` with monitor-relative positions converted to screen coordinates;
-- right-click DBusMenu lists rendered with mHyprMenu; items are routed back to the running bar by
-  numeric menu generation + DBusMenu node id;
+- right-click DBusMenu lists rendered directly by mHyprBar as a Layer Shell overlay;
 - fallback `ContextMenu(x, y)` for items that do not expose a DBusMenu tree;
 - middle-click `SecondaryActivate`;
 - horizontal/vertical wheel forwarding through `Scroll`;
@@ -184,6 +183,26 @@ font_size = 12.0
 padding_x = 8
 padding_y = 5
 min_width = 0
+
+[menu]
+width = 280
+item_height = 30
+padding_x = 10
+border_width = 1
+separator_inset = 8
+indicator = "›"
+hover_background = "#3A3A3AF0"
+border = "#626262"
+separator = "#626262"
+
+[menu.style]
+foreground = "#F2F2F2"
+background = "#202020F2"
+font_family = "sans-serif"
+font_size = 13.0
+padding_x = 0
+padding_y = 0
+min_width = 0
 ~~~
 
 Items that expose only `IconName` are resolved from XDG icon directories. SVG theme icons are
@@ -192,10 +211,12 @@ theme icons use `magick` directly. This keeps GTK/Qt/SVG/image-decoding crates o
 Rust dependency graph. If those optional tools are unavailable, the item falls back without
 crashing the bar.
 
-The DBusMenu bridge starts mHyprMenu in forced one-shot mode with a temporary runtime
-configuration under `$XDG_RUNTIME_DIR`. First-level and second-level menus remain cascading;
-deeper DBusMenu levels are flattened into the second level with `›` prefixes. Separators and
-check/radio state are preserved in the generated labels.
+DBusMenu is handled entirely in-process by mHyprBar. The bar reads the DBusMenu tree through
+`rustsni`, renders a transparent full-output `Layer::Overlay` surface, performs pointer hit
+testing itself, and sends the selected numeric node id directly back through
+`rustsni::menu_click`. No temporary TOML, shell callback, IPC round-trip, or mHyprMenu process is
+involved. First-level and second-level menus remain cascading; deeper DBusMenu levels are flattened
+into the second level with `›` prefixes. Separators and check/radio state are preserved.
 
 Tooltips are independent `Layer::Overlay` surfaces on the same output as the hovered bar. They do
 not reserve screen space and are destroyed when the pointer leaves the tray, changes item, clicks,
@@ -210,7 +231,8 @@ from a rendering problem.
 
 ## mHyprMenu integration
 
-The optional `menu` module is a normal clickable bar module. Its default configuration launches
+The optional `menu` module is separate from the tray. The tray does not depend on mHyprMenu.
+The normal `menu` module is a clickable bar module whose default configuration launches
 `mhyprmenu` directly:
 
 ~~~toml
@@ -271,9 +293,9 @@ mHyprBar.
 modules and current left/center/right layout.
 
 `--tray-list` prints the current visual tray order with index, title, menu availability, SNI
-status, tooltip text, and per-output tray x ranges. `--tray-menu N` opens item `N`'s DBusMenu
-through mHyprMenu. `--tray-tooltip N` forces item `N`'s tooltip. Both are debug/control
-equivalents of the normal pointer interactions.
+status, tooltip text, and per-output tray x ranges. `--tray-menu N` opens item `N`'s
+in-process DBusMenu overlay. `--tray-tooltip N` forces item `N`'s tooltip. Both are
+debug/control equivalents of the normal pointer interactions.
 
 ## Run
 

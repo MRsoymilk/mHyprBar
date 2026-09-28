@@ -44,6 +44,11 @@ use crate::{
     render::{self, Renderer},
     tray::TrayState,
 };
+#[cfg(mhypr_module = "tray")]
+use crate::{
+    tray::TrayMenuRequest,
+    tray_popup::{TrayPopupClick, TrayPopupModel},
+};
 
 pub fn run(config: BarConfig) -> Result<()> {
     let (control_listener, _socket_guard) = ipc::bind_listener()?;
@@ -109,6 +114,8 @@ pub fn run(config: BarConfig) -> Result<()> {
         tray,
         tray_hover: None,
         tooltip: None,
+        #[cfg(mhypr_module = "tray")]
+        tray_popup: None,
         exit: false,
     };
 
@@ -129,6 +136,9 @@ pub fn run(config: BarConfig) -> Result<()> {
                         None => false,
                     };
                     if changed {
+                        if app.tray_popup_item_gone() {
+                            app.close_tray_popup();
+                        }
                         app.sync_tray_width();
                         app.refresh_tray_hover_after_change();
                         app.draw_all();
@@ -169,6 +179,7 @@ pub fn run(config: BarConfig) -> Result<()> {
         )
         .context("failed to register Hyprland event socket")?;
 
+    let control_qh = qh.clone();
     event_loop
         .handle()
         .insert_source(
@@ -185,27 +196,15 @@ pub fn run(config: BarConfig) -> Result<()> {
                                 Ok(Some(Request::Status)) => app.status_text(),
                                 Ok(Some(Request::TrayList)) => app.tray_list_text(),
                                 Ok(Some(Request::TrayMenuOpen { index })) => {
-                                    match app.tray.as_mut() {
-                                        Some(tray) => match tray.open_menu_index(index) {
-                                            Ok(()) => "ok\n".to_owned(),
-                                            Err(error) => format!("error: {error:#}\n"),
-                                        },
-                                        None => "error: tray is unavailable\n".to_owned(),
+                                    match app.open_tray_popup_index(&control_qh, index) {
+                                        Ok(()) => "ok\n".to_owned(),
+                                        Err(error) => format!("error: {error:#}\n"),
                                     }
                                 }
                                 Ok(Some(Request::TrayTooltipOpen { index })) => {
                                     match app.force_tray_tooltip(index) {
                                         Ok(()) => "ok\n".to_owned(),
                                         Err(error) => format!("error: {error:#}\n"),
-                                    }
-                                }
-                                Ok(Some(Request::TrayMenuClick { token, node_id })) => {
-                                    match app.tray.as_mut() {
-                                        Some(tray) => match tray.menu_click(token, node_id) {
-                                            Ok(()) => "ok\n".to_owned(),
-                                            Err(error) => format!("error: {error:#}\n"),
-                                        },
-                                        None => "error: tray is unavailable\n".to_owned(),
                                     }
                                 }
                                 Ok(Some(Request::Quit)) => {
@@ -276,10 +275,19 @@ struct TooltipSurface {
     item_index: usize,
 }
 
+#[cfg(mhypr_module = "tray")]
+struct TrayPopupSurface {
+    layer: LayerSurface,
+    item_id: rustsni::ItemId,
+    menu: TrayPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+}
+
 #[derive(Clone, Copy)]
 enum TrayPointerAction {
     Primary,
-    ContextMenu,
     Secondary,
     ScrollHorizontal(i32),
     ScrollVertical(i32),
@@ -318,6 +326,8 @@ struct App {
     tray: Option<TrayState>,
     tray_hover: Option<TrayHover>,
     tooltip: Option<TooltipSurface>,
+    #[cfg(mhypr_module = "tray")]
+    tray_popup: Option<TrayPopupSurface>,
     exit: bool,
 }
 
@@ -377,6 +387,7 @@ impl App {
 
     fn remove_output(&mut self, output: &wl_output::WlOutput) {
         self.clear_tray_hover();
+        self.close_tray_popup();
         self.bars.retain(|bar| &bar.output != output);
     }
 
@@ -610,12 +621,279 @@ impl App {
         layer.commit();
     }
 
+    #[cfg(mhypr_module = "tray")]
+    fn open_tray_popup_request(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+        request: TrayMenuRequest,
+    ) -> Result<()> {
+        let style = self
+            .tray
+            .as_ref()
+            .context("tray is unavailable")?
+            .menu_style();
+        let mut menu = TrayPopupModel::from_nodes(&request.nodes, style, (0.0, 0.0));
+        anyhow::ensure!(!menu.is_empty(), "tray menu has no visible entries");
+
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("tray bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let origin_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - menu.root_height() - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+        menu.set_origin(local_x, origin_y);
+
+        self.tooltip = None;
+        self.tray_popup = None;
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-tray-menu"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        self.tray_popup = Some(TrayPopupSurface {
+            layer,
+            item_id: request.item_id,
+            menu,
+            width: 1,
+            height: 1,
+            configured: false,
+        });
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "tray")]
+    fn tray_popup_item_gone(&self) -> bool {
+        self.tray_popup.as_ref().is_some_and(|popup| {
+            !self
+                .tray
+                .as_ref()
+                .is_some_and(|tray| tray.has_item(&popup.item_id))
+        })
+    }
+
+    #[cfg(not(mhypr_module = "tray"))]
+    fn tray_popup_item_gone(&self) -> bool {
+        false
+    }
+
+    #[cfg(mhypr_module = "tray")]
+    fn close_tray_popup(&mut self) {
+        self.tray_popup = None;
+    }
+
+    #[cfg(not(mhypr_module = "tray"))]
+    fn close_tray_popup(&mut self) {}
+
+    #[cfg(mhypr_module = "tray")]
+    fn open_tray_popup_at(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        x: f64,
+        y: f64,
+        require_item_is_menu: bool,
+    ) -> bool {
+        let Some(bar) = self.bars.get(bar_index) else {
+            return false;
+        };
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar.width, workspace_visible, &self.config, &self.modules)
+        else {
+            return false;
+        };
+        if hit.name != "tray" {
+            return false;
+        }
+
+        let offset_x = hit.offset_x;
+        let (screen_x, screen_y) = self.screen_position_for_bar(bar_index, x, y);
+        let item_is_menu = self
+            .tray
+            .as_ref()
+            .is_some_and(|tray| tray.item_is_menu_at(offset_x));
+        if require_item_is_menu && !item_is_menu {
+            return false;
+        }
+
+        let request = match self.tray.as_mut() {
+            Some(tray) => match tray.menu_request_at(offset_x) {
+                Ok(request) => request,
+                Err(error) => {
+                    eprintln!("mhyprbar: failed to read tray DBusMenu: {error:#}");
+                    return true;
+                }
+            },
+            None => return true,
+        };
+
+        if let Some(request) = request {
+            if let Err(error) = self.open_tray_popup_request(qh, bar_index, x, request) {
+                eprintln!("mhyprbar: failed to open tray popup: {error:#}");
+            }
+            return true;
+        }
+
+        if let Some(tray) = self.tray.as_mut()
+            && let Err(error) = tray.context_menu_at(offset_x, screen_x, screen_y)
+        {
+            eprintln!("mhyprbar: tray ContextMenu fallback failed: {error:#}");
+        }
+        true
+    }
+
+    #[cfg(not(mhypr_module = "tray"))]
+    fn open_tray_popup_at(
+        &mut self,
+        _qh: &QueueHandle<Self>,
+        _bar_index: usize,
+        _x: f64,
+        _y: f64,
+        _require_item_is_menu: bool,
+    ) -> bool {
+        false
+    }
+
+    #[cfg(not(mhypr_module = "tray"))]
+    fn open_tray_popup_index(&mut self, _qh: &QueueHandle<Self>, _index: usize) -> Result<()> {
+        anyhow::bail!("tray module is not compiled")
+    }
+
+    #[cfg(mhypr_module = "tray")]
+    fn open_tray_popup_index(&mut self, qh: &QueueHandle<Self>, index: usize) -> Result<()> {
+        let request = self
+            .tray
+            .as_mut()
+            .context("tray is unavailable")?
+            .menu_request_index(index)?;
+        let bar_index = 0usize;
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("no bar output is available")?;
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let tray_start = (0..bar.width as i32)
+            .find(|x| {
+                render::module_at_x(
+                    *x as f64,
+                    bar.width,
+                    workspace_visible,
+                    &self.config,
+                    &self.modules,
+                )
+                .is_some_and(|hit| hit.name == "tray")
+            })
+            .context("tray module is not visible on the first bar")?;
+        let tray = self.tray.as_ref().context("tray is unavailable")?;
+        let local_x = tray_start
+            .saturating_add(tray.padding_x())
+            .saturating_add(index as i32 * tray.icon_size().saturating_add(tray.spacing()))
+            .saturating_add(tray.icon_size() / 2) as f64;
+        self.open_tray_popup_request(qh, bar_index, local_x, request)
+    }
+
+    #[cfg(mhypr_module = "tray")]
+    fn draw_tray_popup(&mut self) {
+        let Some(popup) = self.tray_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create tray popup SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) = self
+            .renderer
+            .draw_tray_popup(canvas, width, height, &popup.menu)
+        {
+            eprintln!("mhyprbar: tray popup render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach tray popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "tray")]
+    fn activate_tray_popup_at(&mut self, x: f64, y: f64) {
+        let outcome = match self.tray_popup.as_ref() {
+            Some(popup) => popup
+                .menu
+                .click(x, y, popup.width as f64, popup.height as f64),
+            None => return,
+        };
+
+        match outcome {
+            TrayPopupClick::Keep => {}
+            TrayPopupClick::Close => self.close_tray_popup(),
+            TrayPopupClick::Activate(node_id) => {
+                let Some(item_id) = self.tray_popup.as_ref().map(|popup| popup.item_id.clone())
+                else {
+                    return;
+                };
+                let result = self
+                    .tray
+                    .as_mut()
+                    .context("tray is unavailable")
+                    .and_then(|tray| tray.menu_click_item(&item_id, node_id));
+                if let Err(error) = result {
+                    eprintln!("mhyprbar: tray DBusMenu click failed: {error:#}");
+                } else {
+                    self.close_tray_popup();
+                }
+            }
+        }
+    }
+
     fn reload_config(&mut self) -> Result<()> {
         let config = crate::validate_config().context("reload validation failed")?;
         let background = config.background_rgba()?;
         let mut modules = ModuleManager::load()?;
         modules.refresh_due();
         self.clear_tray_hover();
+        self.close_tray_popup();
         if let Some(tray) = self.tray.as_mut() {
             tray.reload_config()?;
         }
@@ -907,7 +1185,6 @@ impl App {
         };
         let result = match action {
             TrayPointerAction::Primary => tray.activate_at(offset_x, screen_x, screen_y),
-            TrayPointerAction::ContextMenu => tray.context_menu_at(offset_x, screen_x, screen_y),
             TrayPointerAction::Secondary => {
                 tray.secondary_activate_at(offset_x, screen_x, screen_y)
             }
@@ -1003,6 +1280,15 @@ impl LayerShellHandler for App {
             self.tooltip = None;
             return;
         }
+        #[cfg(mhypr_module = "tray")]
+        if self
+            .tray_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.tray_popup = None;
+            return;
+        }
 
         self.bars
             .retain(|bar| bar.layer.wl_surface() != layer.wl_surface());
@@ -1031,6 +1317,20 @@ impl LayerShellHandler for App {
                 tooltip.configured = true;
             }
             self.draw_tooltip();
+            return;
+        }
+        #[cfg(mhypr_module = "tray")]
+        if self
+            .tray_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.tray_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_tray_popup();
             return;
         }
 
@@ -1094,11 +1394,43 @@ impl PointerHandler for App {
     fn pointer_frame(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
         for event in events {
+            #[cfg(mhypr_module = "tray")]
+            if self
+                .tray_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                let mut redraw = false;
+                match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        if let Some(popup) = self.tray_popup.as_mut() {
+                            redraw = popup.menu.pointer_moved(
+                                event.position.0,
+                                event.position.1,
+                                popup.width as f64,
+                                popup.height as f64,
+                            );
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        self.activate_tray_popup_at(event.position.0, event.position.1);
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_tray_popup();
+                    }
+                    _ => {}
+                }
+                if redraw {
+                    self.draw_tray_popup();
+                }
+                continue;
+            }
+
             let Some(index) = self
                 .bars
                 .iter()
@@ -1124,16 +1456,25 @@ impl PointerHandler for App {
                     self.clear_tray_hover();
                     match button {
                         BTN_LEFT => {
-                            if !self.activate_workspace(index, event.position.0) {
+                            if !self.activate_workspace(index, event.position.0)
+                                && !self.open_tray_popup_at(
+                                    qh,
+                                    index,
+                                    event.position.0,
+                                    event.position.1,
+                                    true,
+                                )
+                            {
                                 self.activate_module_at(index, event.position.0, event.position.1);
                             }
                         }
                         BTN_RIGHT => {
-                            let _ = self.tray_action_at(
+                            let _ = self.open_tray_popup_at(
+                                qh,
                                 index,
                                 event.position.0,
                                 event.position.1,
-                                TrayPointerAction::ContextMenu,
+                                false,
                             );
                         }
                         BTN_MIDDLE => {

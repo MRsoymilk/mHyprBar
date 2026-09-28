@@ -20,6 +20,8 @@ pub struct TrayConfig {
     #[serde(default)]
     pub tooltip: TooltipConfig,
     #[serde(default)]
+    pub menu: MenuConfig,
+    #[serde(default)]
     pub style: ModuleStyle,
 }
 
@@ -35,6 +37,90 @@ pub struct TooltipConfig {
     pub max_chars: usize,
     #[serde(default = "default_tooltip_style")]
     pub style: ModuleStyle,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct MenuConfig {
+    #[serde(default = "default_menu_width")]
+    pub width: i32,
+    #[serde(default = "default_menu_item_height")]
+    pub item_height: i32,
+    #[serde(default = "default_menu_padding_x")]
+    pub padding_x: i32,
+    #[serde(default = "default_menu_border_width")]
+    pub border_width: i32,
+    #[serde(default = "default_menu_separator_inset")]
+    pub separator_inset: i32,
+    #[serde(default = "default_menu_indicator")]
+    pub indicator: String,
+    #[serde(default = "default_menu_hover")]
+    pub hover_background: String,
+    #[serde(default = "default_menu_border")]
+    pub border: String,
+    #[serde(default = "default_menu_separator")]
+    pub separator: String,
+    #[serde(default = "default_menu_style")]
+    pub style: ModuleStyle,
+}
+
+impl Default for MenuConfig {
+    fn default() -> Self {
+        Self {
+            width: default_menu_width(),
+            item_height: default_menu_item_height(),
+            padding_x: default_menu_padding_x(),
+            border_width: default_menu_border_width(),
+            separator_inset: default_menu_separator_inset(),
+            indicator: default_menu_indicator(),
+            hover_background: default_menu_hover(),
+            border: default_menu_border(),
+            separator: default_menu_separator(),
+            style: default_menu_style(),
+        }
+    }
+}
+
+impl MenuConfig {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.width > 0, "tray menu width must be greater than zero");
+        ensure!(
+            self.item_height > 0,
+            "tray menu item_height must be greater than zero"
+        );
+        ensure!(
+            self.padding_x >= 0,
+            "tray menu padding_x must not be negative"
+        );
+        ensure!(
+            self.border_width >= 0,
+            "tray menu border_width must not be negative"
+        );
+        ensure!(
+            self.separator_inset >= 0,
+            "tray menu separator_inset must not be negative"
+        );
+        ensure!(
+            !self.indicator.is_empty(),
+            "tray menu indicator must not be empty"
+        );
+        self.style.validate()?;
+        let _ = config::parse_rgba(&self.hover_background)?;
+        let _ = config::parse_rgba(&self.border)?;
+        let _ = config::parse_rgba(&self.separator)?;
+        Ok(())
+    }
+
+    pub fn hover_rgba(&self) -> Result<[u8; 4]> {
+        config::parse_rgba(&self.hover_background)
+    }
+
+    pub fn border_rgba(&self) -> Result<[u8; 4]> {
+        config::parse_rgba(&self.border)
+    }
+
+    pub fn separator_rgba(&self) -> Result<[u8; 4]> {
+        config::parse_rgba(&self.separator)
+    }
 }
 
 impl Default for TooltipConfig {
@@ -71,6 +157,7 @@ impl TrayConfig {
             "tray tooltip max_chars must be greater than zero"
         );
         self.tooltip.style.validate()?;
+        self.menu.validate()?;
         self.style.validate()
     }
 }
@@ -102,6 +189,54 @@ impl StatusModule for TrayModule {
 
     fn sample(&mut self) -> Result<String> {
         Ok(String::new())
+    }
+}
+
+fn default_menu_width() -> i32 {
+    280
+}
+
+fn default_menu_item_height() -> i32 {
+    30
+}
+
+fn default_menu_padding_x() -> i32 {
+    10
+}
+
+fn default_menu_border_width() -> i32 {
+    1
+}
+
+fn default_menu_separator_inset() -> i32 {
+    8
+}
+
+fn default_menu_indicator() -> String {
+    "›".into()
+}
+
+fn default_menu_hover() -> String {
+    "#3A3A3AF0".into()
+}
+
+fn default_menu_border() -> String {
+    "#626262".into()
+}
+
+fn default_menu_separator() -> String {
+    "#626262".into()
+}
+
+fn default_menu_style() -> ModuleStyle {
+    ModuleStyle {
+        foreground: "#F2F2F2".into(),
+        background: "#202020F2".into(),
+        font_family: "sans-serif".into(),
+        font_size: 13.0,
+        padding_x: 0,
+        padding_y: 0,
+        min_width: 0,
     }
 }
 

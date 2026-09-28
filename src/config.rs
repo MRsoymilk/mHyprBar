@@ -303,7 +303,7 @@ where
     toml::from_str(&source).with_context(|| format!("invalid module config {}", path.display()))
 }
 
-fn parse_rgba(value: &str) -> Result<[u8; 4]> {
+pub(crate) fn parse_rgba(value: &str) -> Result<[u8; 4]> {
     if value == "transparent" {
         return Ok([0, 0, 0, 0]);
     }

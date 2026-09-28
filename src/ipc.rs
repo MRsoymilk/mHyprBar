@@ -19,7 +19,6 @@ pub enum Request {
     TrayList,
     TrayMenuOpen { index: usize },
     TrayTooltipOpen { index: usize },
-    TrayMenuClick { token: u64, node_id: i32 },
 }
 
 impl Request {
@@ -31,9 +30,6 @@ impl Request {
             Self::TrayList => "tray-list\n".into(),
             Self::TrayMenuOpen { index } => format!("tray-menu-open {index}\n"),
             Self::TrayTooltipOpen { index } => format!("tray-tooltip-open {index}\n"),
-            Self::TrayMenuClick { token, node_id } => {
-                format!("tray-menu-click {token} {node_id}\n")
-            }
         }
     }
 
@@ -60,14 +56,6 @@ impl Request {
                             return None;
                         }
                         Some(Self::TrayTooltipOpen { index })
-                    }
-                    "tray-menu-click" => {
-                        let token = fields.next()?.parse().ok()?;
-                        let node_id = fields.next()?.parse().ok()?;
-                        if fields.next().is_some() {
-                            return None;
-                        }
-                        Some(Self::TrayMenuClick { token, node_id })
                     }
                     _ => None,
                 }
@@ -163,22 +151,6 @@ mod tests {
             Request::parse(b"tray-tooltip-open 2\n"),
             Some(Request::TrayTooltipOpen { index: 2 })
         );
-        assert_eq!(
-            Request::parse(b"tray-menu-click 42 -7\n"),
-            Some(Request::TrayMenuClick {
-                token: 42,
-                node_id: -7,
-            })
-        );
         assert_eq!(Request::parse(b"unknown\n"), None);
-    }
-
-    #[test]
-    fn round_trips_tray_menu_click() {
-        let request = Request::TrayMenuClick {
-            token: 123,
-            node_id: 9,
-        };
-        assert_eq!(Request::parse(request.encode().as_bytes()), Some(request));
     }
 }
