@@ -130,6 +130,30 @@ show_percent = false
 
 Set `show_percent = true` to add the current numeric percentage to the right of the graph, or set `label = "CPU"` if a text prefix is desired.
 
+Left-clicking the CPU graph toggles an in-process CPU details popup inspired by `awesome-wm-widgets/cpu-widget`. The popup stays CPU-focused: it shows per-core utilization bars plus the top CPU processes with only `PID`, `Name`, and `%CPU`. The normal bar remains lightweight; `ps` is launched only while the popup is open, and the popup refreshes independently.
+
+~~~toml
+[popup]
+enabled = true
+width = 360
+row_height = 24
+padding = 10
+refresh_ms = 1000
+max_processes = 10
+bar_width = 150
+bar_background = "#303030"
+bar_fill = "#F2F2F2"
+border = "#626262"
+separator = "#626262"
+hover_background = "#3A3A3AF0"
+
+[popup.style]
+foreground = "#F2F2F2"
+background = "#202020F2"
+font_family = "sans-serif"
+font_size = 12.0
+~~~
+
 Install the example configuration:
 
 ~~~bash

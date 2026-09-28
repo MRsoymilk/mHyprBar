@@ -16,6 +16,7 @@ pub enum Request {
     Reload,
     Status,
     Quit,
+    CpuPopupToggle,
     TrayList,
     TrayMenuOpen { index: usize },
     TrayTooltipOpen { index: usize },
@@ -27,6 +28,7 @@ impl Request {
             Self::Reload => "reload\n".into(),
             Self::Status => "status\n".into(),
             Self::Quit => "quit\n".into(),
+            Self::CpuPopupToggle => "cpu-popup-toggle\n".into(),
             Self::TrayList => "tray-list\n".into(),
             Self::TrayMenuOpen { index } => format!("tray-menu-open {index}\n"),
             Self::TrayTooltipOpen { index } => format!("tray-tooltip-open {index}\n"),
@@ -39,6 +41,7 @@ impl Request {
             "reload" => Some(Self::Reload),
             "status" => Some(Self::Status),
             "quit" => Some(Self::Quit),
+            "cpu-popup-toggle" => Some(Self::CpuPopupToggle),
             "tray-list" => Some(Self::TrayList),
             _ => {
                 let mut fields = text.split_whitespace();
@@ -142,6 +145,10 @@ mod tests {
         assert_eq!(Request::parse(b"reload\n"), Some(Request::Reload));
         assert_eq!(Request::parse(b" status \n"), Some(Request::Status));
         assert_eq!(Request::parse(b"quit"), Some(Request::Quit));
+        assert_eq!(
+            Request::parse(b"cpu-popup-toggle"),
+            Some(Request::CpuPopupToggle)
+        );
         assert_eq!(Request::parse(b"tray-list"), Some(Request::TrayList));
         assert_eq!(
             Request::parse(b"tray-menu-open 3\n"),

@@ -141,6 +141,232 @@ impl Renderer {
         (width as u32, height as u32)
     }
 
+    #[cfg(mhypr_module = "cpu")]
+    pub fn draw_cpu_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::cpu_popup::CpuPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let bar_bg = cfg.bar_background_rgba()?;
+        let bar_fill = cfg.bar_fill_rgba()?;
+        let hover = cfg.hover_rgba()?;
+
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let row_h = cfg.row_height;
+        let pad = cfg.padding;
+        let mut y = panel.y.saturating_add(pad);
+
+        self.draw_cpu_popup_text(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: panel.x + pad,
+                y,
+                w: panel.w - pad * 2,
+                h: row_h,
+            },
+            "CPU cores",
+            &cfg.style,
+        )?;
+        y = y.saturating_add(row_h);
+
+        for core in &model.cores {
+            let usage = core.usage.unwrap_or(0.0).clamp(0.0, 100.0);
+            let label_rect = Rect {
+                x: panel.x + pad,
+                y,
+                w: 52,
+                h: row_h,
+            };
+            self.draw_cpu_popup_text(canvas, width, height, label_rect, &core.name, &cfg.style)?;
+
+            let percent_rect = Rect {
+                x: panel.x + pad + 54,
+                y,
+                w: 44,
+                h: row_h,
+            };
+            let percent = core
+                .usage
+                .map(|value| format!("{value:.0}%"))
+                .unwrap_or_else(|| "--%".into());
+            self.draw_cpu_popup_text(canvas, width, height, percent_rect, &percent, &cfg.style)?;
+
+            let bar_w = cfg
+                .bar_width
+                .min(panel.w.saturating_sub(pad * 2 + 104))
+                .max(1);
+            let bar_h = (row_h - 8).max(4);
+            let bar_rect = Rect {
+                x: panel.x + panel.w - pad - bar_w,
+                y: y + (row_h - bar_h) / 2,
+                w: bar_w,
+                h: bar_h,
+            };
+            fill_rect(canvas, width, height, bar_rect, bar_bg);
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: bar_rect.x,
+                    y: bar_rect.y,
+                    w: ((bar_rect.w as f32 * usage / 100.0).round() as i32).clamp(0, bar_rect.w),
+                    h: bar_rect.h,
+                },
+                bar_fill,
+            );
+            y = y.saturating_add(row_h);
+        }
+
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: panel.x + pad,
+                y,
+                w: (panel.w - pad * 2).max(0),
+                h: 1,
+            },
+            separator,
+        );
+        y = y.saturating_add(1);
+
+        let header = Rect {
+            x: panel.x + pad,
+            y,
+            w: panel.w - pad * 2,
+            h: row_h,
+        };
+        self.draw_cpu_popup_text(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: header.x,
+                y,
+                w: 48,
+                h: row_h,
+            },
+            "PID",
+            &cfg.style,
+        )?;
+        self.draw_cpu_popup_text(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: header.x + 52,
+                y,
+                w: header.w - 108,
+                h: row_h,
+            },
+            "Name",
+            &cfg.style,
+        )?;
+        self.draw_cpu_popup_text(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: header.x + header.w - 52,
+                y,
+                w: 52,
+                h: row_h,
+            },
+            "%CPU",
+            &cfg.style,
+        )?;
+        y = y.saturating_add(row_h);
+
+        for (index, process) in model.processes.iter().enumerate() {
+            let row = Rect {
+                x: panel.x + pad,
+                y,
+                w: panel.w - pad * 2,
+                h: row_h,
+            };
+            if model.hovered_process == Some(index) {
+                fill_rect(canvas, width, height, row, hover);
+            }
+            self.draw_cpu_popup_text(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: row.x,
+                    y,
+                    w: 48,
+                    h: row_h,
+                },
+                &process.pid.to_string(),
+                &cfg.style,
+            )?;
+            self.draw_cpu_popup_text(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: row.x + 52,
+                    y,
+                    w: row.w - 108,
+                    h: row_h,
+                },
+                &process.name,
+                &cfg.style,
+            )?;
+            self.draw_cpu_popup_text(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: row.x + row.w - 52,
+                    y,
+                    w: 52,
+                    h: row_h,
+                },
+                &format!("{:.1}", process.cpu),
+                &cfg.style,
+            )?;
+            y = y.saturating_add(row_h);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "cpu")]
+    fn draw_cpu_popup_text(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        text: &str,
+        style: &ModuleStyle,
+    ) -> Result<()> {
+        self.draw_text_content(canvas, width, height, rect, text, style, 0, 0)
+    }
+
     pub fn draw_tooltip(
         &mut self,
         canvas: &mut [u8],
@@ -983,6 +1209,68 @@ fn blend_pixel_rgba(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, 
     }
     let offset = ((y as u32 * width + x as u32) * 4) as usize;
     blend_at(&mut canvas[offset..offset + 4], rgba);
+}
+
+#[cfg(mhypr_module = "cpu")]
+fn draw_rect_border(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    color: [u8; 4],
+    border_width: i32,
+) {
+    if border_width <= 0 || rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: border_width,
+        },
+        color,
+    );
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y + rect.h - border_width,
+            w: rect.w,
+            h: border_width,
+        },
+        color,
+    );
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: border_width,
+            h: rect.h,
+        },
+        color,
+    );
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: rect.x + rect.w - border_width,
+            y: rect.y,
+            w: border_width,
+            h: rect.h,
+        },
+        color,
+    );
 }
 
 #[cfg(mhypr_module = "tray")]

@@ -103,6 +103,7 @@ impl CpuModule {
             "cpu must show either graph or text"
         );
         config.style.validate()?;
+        let _ = crate::cpu_popup::CpuPopupConfig::load()?;
 
         let graph_background = config::parse_rgba(&config.graph_background)?;
         let graph_low = config::parse_rgba(&config.graph_low)?;

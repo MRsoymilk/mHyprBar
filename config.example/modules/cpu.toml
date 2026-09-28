@@ -24,3 +24,26 @@ font_size = 13.0
 padding_x = 6
 padding_y = 0
 min_width = 0
+
+[popup]
+enabled = true
+width = 360
+row_height = 24
+padding = 10
+refresh_ms = 1000
+max_processes = 10
+bar_width = 150
+bar_background = "#303030"
+bar_fill = "#F2F2F2"
+border = "#626262"
+separator = "#626262"
+hover_background = "#3A3A3AF0"
+
+[popup.style]
+foreground = "#F2F2F2"
+background = "#202020F2"
+font_family = "sans-serif"
+font_size = 12.0
+padding_x = 0
+padding_y = 0
+min_width = 0
