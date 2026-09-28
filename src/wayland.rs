@@ -36,6 +36,7 @@ use crate::{
     ipc::{self, Request},
     modules::ModuleManager,
     render::{self, Renderer},
+    tray::TrayState,
 };
 
 pub fn run(config: BarConfig) -> Result<()> {
@@ -43,6 +44,26 @@ pub fn run(config: BarConfig) -> Result<()> {
     let background = config.background_rgba()?;
     let mut modules = ModuleManager::load()?;
     modules.refresh_due();
+
+    #[cfg(mhypr_module = "tray")]
+    let tray = match TrayState::new() {
+        Ok(tray) => Some(tray),
+        Err(error) => {
+            eprintln!("mhyprbar: tray disabled at runtime: {error:#}");
+            None
+        }
+    };
+    #[cfg(not(mhypr_module = "tray"))]
+    let tray: Option<TrayState> = None;
+
+    let tray_fd = tray.as_ref().and_then(|tray| match tray.duplicate_fd() {
+        Ok(fd) => Some(fd),
+        Err(error) => {
+            eprintln!("mhyprbar: failed to register tray D-Bus fd: {error:#}");
+            None
+        }
+    });
+    modules.set_width_override("tray", Some(tray.as_ref().map_or(0, TrayState::width)));
 
     let hyprland = Snapshot::refresh().context("failed to read initial Hyprland state")?;
     let hypr_events = hyprland::event_stream()?;
@@ -79,8 +100,35 @@ pub fn run(config: BarConfig) -> Result<()> {
         modules,
         renderer: Renderer::new(),
         hyprland,
+        tray,
         exit: false,
     };
+
+    if let Some(tray_fd) = tray_fd {
+        event_loop
+            .handle()
+            .insert_source(
+                Generic::new(tray_fd, Interest::READ, Mode::Level),
+                move |_, _, app| {
+                    let changed = match app.tray.as_mut() {
+                        Some(tray) => match tray.poll() {
+                            Ok(changed) => changed,
+                            Err(error) => {
+                                eprintln!("mhyprbar: tray event processing failed: {error:#}");
+                                false
+                            }
+                        },
+                        None => false,
+                    };
+                    if changed {
+                        app.sync_tray_width();
+                        app.draw_all();
+                    }
+                    Ok(PostAction::Continue)
+                },
+            )
+            .context("failed to register tray D-Bus fd")?;
+    }
 
     let mut event_buffer = String::new();
     event_loop
@@ -186,6 +234,7 @@ struct App {
     modules: ModuleManager,
     renderer: Renderer,
     hyprland: Snapshot,
+    tray: Option<TrayState>,
     exit: bool,
 }
 
@@ -253,11 +302,20 @@ impl App {
         Ok(())
     }
 
+    fn sync_tray_width(&mut self) {
+        let width = self.tray.as_ref().map_or(0, TrayState::width);
+        let _ = self.modules.set_width_override("tray", Some(width));
+    }
+
     fn reload_config(&mut self) -> Result<()> {
         let config = crate::validate_config().context("reload validation failed")?;
         let background = config.background_rgba()?;
         let mut modules = ModuleManager::load()?;
         modules.refresh_due();
+        if let Some(tray) = self.tray.as_mut() {
+            tray.reload_config()?;
+        }
+        modules.set_width_override("tray", Some(self.tray.as_ref().map_or(0, TrayState::width)));
 
         let anchor = if config.position == "bottom" {
             Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT
@@ -299,12 +357,14 @@ impl App {
             .map(|module| module.name)
             .collect::<Vec<_>>()
             .join(",");
+        let tray_items = self.tray.as_ref().map_or(0, TrayState::len);
         format!(
-            "running=1 pid={} outputs={} position={} height={} compiled={} left={} center={} right={}\n",
+            "running=1 pid={} outputs={} position={} height={} tray_items={} compiled={} left={} center={} right={}\n",
             std::process::id(),
             self.bars.len(),
             self.config.position,
             self.config.height,
+            tray_items,
             compiled,
             self.config.left.join(","),
             self.config.center.join(","),
@@ -361,6 +421,7 @@ impl App {
             self.background,
             &self.config,
             &self.modules,
+            self.tray.as_ref(),
             monitor.as_ref(),
             &self.hyprland,
         ) {
@@ -407,12 +468,21 @@ impl App {
             return;
         };
         let workspace_visible = self.monitor_for_bar(bar_index).is_some();
-        let Some(name) =
+        let Some(hit) =
             render::module_at_x(x, bar.width, workspace_visible, &self.config, &self.modules)
-                .map(str::to_owned)
         else {
             return;
         };
+        let name = hit.name.to_owned();
+
+        if name == "tray" {
+            if let Some(tray) = self.tray.as_mut()
+                && let Err(error) = tray.activate_at(hit.offset_x)
+            {
+                eprintln!("mhyprbar: tray action failed: {error:#}");
+            }
+            return;
+        }
 
         match self.modules.activate(&name) {
             Ok(true) => self.draw_all(),

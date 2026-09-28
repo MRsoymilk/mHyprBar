@@ -12,7 +12,7 @@ background = "#181818EE"
 # These names must also be enabled in build.modules.toml.
 left = ["menu"]
 center = ["active_window"]
-right = ["network", "cpu", "memory", "disk", "battery", "clock"]
+right = ["network", "cpu", "memory", "disk", "battery", "tray", "clock"]
 
 [workspaces]
 # Each monitor displays local labels 1..9.

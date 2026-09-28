@@ -26,7 +26,8 @@ The base panel and first status-module renderer are implemented:
 - event-driven workspace/monitor updates from Hyprland socket2;
 - local workspace labels 1–9 on every monitor;
 - active and occupied workspace highlighting;
-- clickable workspace switching per monitor.
+- clickable workspace switching per monitor;
+- StatusNotifierItem system tray with event-driven add/remove/update, IconPixmap rendering and primary activation.
 
 P4 status modules are complete. The default build keeps external desktop integrations disabled: audio (`wpctl`) and MPRIS (`playerctl`) are opt-in compile-time modules.
 
@@ -49,9 +50,10 @@ cpu = true
 memory = true
 network = true
 audio = false
-mpris = false
+mpris = true
 disk = true
 battery = true
+tray = true
 ~~~
 
 `true` means the module source is compiled into the binary. `false` excludes that module from the binary.
@@ -70,15 +72,14 @@ cargo run -- --list-modules
 
 ## Dependency policy
 
-The default build avoids optional desktop-service integrations. Core modules read Hyprland IPC,
-Linux `/proc` and `/sys` directly. No extra Rust crate is added for audio or MPRIS.
-
-Optional integrations are disabled by default:
+Core modules read Hyprland IPC, Linux `/proc` and `/sys` directly. Audio and MPRIS remain
+compile-time selectable integrations:
 
 - `audio` uses `wpctl` and therefore requires a working PipeWire/WirePlumber session;
-- `mpris` uses `playerctl` and an MPRIS-capable media player.
+- `mpris` uses `playerctl` and an MPRIS-capable media player;
+- `tray` adds one direct Rust dependency, `rustsni`, over the session D-Bus. `rustsni` is poll-friendly and uses pure-Rust `rustbus`; mHyprBar does not use GTK, Qt, Tokio, libdbus, or an image-decoding crate.
 
-Enable either module explicitly in `build.modules.toml` only when needed. Battery discovery is
+Enable or disable these modules in `build.modules.toml` as needed. Battery discovery is
 native through `/sys/class/power_supply`; `device = "auto"` hides the module silently when no
 battery exists.
 
@@ -106,6 +107,7 @@ Each compiled module has its own configuration file:
 ~/.config/mhyprbar/modules/mpris.toml
 ~/.config/mhyprbar/modules/disk.toml
 ~/.config/mhyprbar/modules/battery.toml
+~/.config/mhyprbar/modules/tray.toml
 ~~~
 
 The per-module file controls module-specific behavior and visual style. Periodic modules also define their own refresh interval; event-driven modules such as `active_window` do not poll. An empty module value is hidden completely and consumes no bar width.
@@ -137,10 +139,42 @@ MHYPRBAR_CONFIG_DIR=config.example cargo run -- --check-config
 ~~~toml
 left = ["menu"]
 center = ["active_window"]
-right = ["network", "cpu", "memory", "disk", "battery", "clock"]
+right = ["network", "cpu", "memory", "disk", "battery", "tray", "clock"]
 ~~~
 
 A module named in `bar.toml` must also be enabled in `build.modules.toml`.
+
+## System tray
+
+The `tray` module implements a StatusNotifierHost and provides a StatusNotifierWatcher fallback
+when the session has no watcher. It is event-driven through the same calloop loop as Wayland.
+
+Phase 1 supports:
+
+- dynamic item registration/removal/update;
+- SNI `IconPixmap` (ARGB32) rendered directly into the existing wl_shm buffer;
+- `NeedsAttention` pixmaps;
+- left-click `Activate`;
+- `ItemIsMenu` items via their `ContextMenu` method;
+- hidden passive items by default.
+
+~~~toml
+# modules/tray.toml
+icon_size = 18
+spacing = 6
+show_passive = false
+~~~
+
+Items that expose only `IconName` are resolved from XDG icon directories. SVG theme icons are
+rasterized once through the system `rsvg-convert` + `magick` tools and cached in memory; PNG
+theme icons use `magick` directly. This keeps GTK/Qt/SVG/image-decoding crates out of mHyprBar's
+Rust dependency graph. If those optional tools are unavailable, the item falls back without
+crashing the bar.
+
+DBusMenu rendering inside mHyprMenu remains follow-up work.
+
+`mhyprbar --status` reports `tray_items=N`, which is useful for distinguishing an empty tray
+from a rendering problem.
 
 ## mHyprMenu integration
 
@@ -198,8 +232,8 @@ non-zero and the currently running configuration remains active.
 Changes to `build.modules.toml` are compile-time changes and still require rebuilding/restarting
 mHyprBar.
 
-`--status` prints the running PID, output count, position/height, compiled modules and current
-left/center/right layout.
+`--status` prints the running PID, output count, position/height, tray item count, compiled
+modules and current left/center/right layout.
 
 ## Run
 

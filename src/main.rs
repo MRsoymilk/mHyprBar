@@ -3,6 +3,7 @@ mod hyprland;
 mod ipc;
 mod modules;
 mod render;
+mod tray;
 mod wayland;
 
 use std::{collections::HashSet, env};

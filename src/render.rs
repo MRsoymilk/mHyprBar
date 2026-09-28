@@ -5,6 +5,7 @@ use crate::{
     config::{BarConfig, ModuleStyle, WorkspacesConfig},
     hyprland::{MonitorState, Snapshot},
     modules::{ModuleManager, ModuleView},
+    tray::TrayState,
 };
 
 pub struct Renderer {
@@ -29,6 +30,7 @@ impl Renderer {
         background: [u8; 4],
         config: &BarConfig,
         modules: &ModuleManager,
+        tray: Option<&TrayState>,
         monitor: Option<&MonitorState>,
         snapshot: &Snapshot,
     ) -> Result<()> {
@@ -50,9 +52,17 @@ impl Renderer {
             self.draw_workspaces(canvas, width, height, &config.workspaces, monitor, snapshot)?;
         let (left_x, center_x, right_x) = group_origins(width, workspace_width, config, modules);
 
-        self.draw_group(canvas, width, height, left_x, &config.left, modules)?;
-        self.draw_group(canvas, width, height, center_x, &config.center, modules)?;
-        self.draw_group(canvas, width, height, right_x, &config.right, modules)?;
+        self.draw_group(canvas, width, height, left_x, &config.left, modules, tray)?;
+        self.draw_group(
+            canvas,
+            width,
+            height,
+            center_x,
+            &config.center,
+            modules,
+            tray,
+        )?;
+        self.draw_group(canvas, width, height, right_x, &config.right, modules, tray)?;
 
         Ok(())
     }
@@ -160,6 +170,7 @@ impl Renderer {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_group(
         &mut self,
         canvas: &mut [u8],
@@ -168,6 +179,7 @@ impl Renderer {
         mut x: i32,
         names: &[String],
         modules: &ModuleManager,
+        tray: Option<&TrayState>,
     ) -> Result<()> {
         for name in names {
             let Some(view) = modules.view(name) else {
@@ -189,10 +201,64 @@ impl Renderer {
                 fill_rect(canvas, width, height, rect, background);
             }
 
-            self.draw_text(canvas, width, height, rect, &view)?;
+            if name == "tray" {
+                if let Some(tray) = tray {
+                    self.draw_tray(canvas, width, height, rect, tray, &view);
+                }
+            } else {
+                self.draw_text(canvas, width, height, rect, &view)?;
+            }
             x = x.saturating_add(module_width);
         }
         Ok(())
+    }
+
+    fn draw_tray(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        tray: &TrayState,
+        view: &ModuleView<'_>,
+    ) {
+        let icon_size = tray.icon_size().max(1);
+        let mut x = rect.x.saturating_add(tray.padding_x());
+        let y = rect
+            .y
+            .saturating_add((rect.h.saturating_sub(icon_size)).max(0) / 2);
+        let mut fallback = view.style.foreground_rgba().unwrap_or([255, 255, 255, 255]);
+        fallback[3] = fallback[3].min(96);
+
+        for icon in tray.icons() {
+            if let Some(pixels) = icon.pixels {
+                draw_native_argb_pixmap(
+                    canvas,
+                    width,
+                    height,
+                    x,
+                    y,
+                    icon_size,
+                    icon.width,
+                    icon.height,
+                    pixels,
+                );
+            } else {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x,
+                        y,
+                        w: icon_size,
+                        h: icon_size,
+                    },
+                    fallback,
+                );
+            }
+            x = x.saturating_add(icon_size).saturating_add(tray.spacing());
+        }
     }
 
     fn draw_text(
@@ -258,13 +324,18 @@ struct Rect {
     h: i32,
 }
 
+pub struct ModuleHit<'a> {
+    pub name: &'a str,
+    pub offset_x: i32,
+}
+
 pub fn module_at_x<'a>(
     x: f64,
     width: u32,
     workspace_visible: bool,
     config: &'a BarConfig,
     modules: &ModuleManager,
-) -> Option<&'a str> {
+) -> Option<ModuleHit<'a>> {
     if x < 0.0 {
         return None;
     }
@@ -310,7 +381,7 @@ fn hit_group<'a>(
     start_x: i32,
     names: &'a [String],
     modules: &ModuleManager,
-) -> Option<&'a str> {
+) -> Option<ModuleHit<'a>> {
     let mut cursor = start_x;
     for name in names {
         let Some(view) = modules.view(name) else {
@@ -318,7 +389,10 @@ fn hit_group<'a>(
         };
         let width = module_width(&view);
         if x >= cursor as f64 && x < cursor.saturating_add(width) as f64 {
-            return Some(name.as_str());
+            return Some(ModuleHit {
+                name: name.as_str(),
+                offset_x: (x - cursor as f64) as i32,
+            });
         }
         cursor = cursor.saturating_add(width);
     }
@@ -334,6 +408,9 @@ fn group_width(names: &[String], modules: &ModuleManager) -> i32 {
 }
 
 fn module_width(view: &ModuleView<'_>) -> i32 {
+    if let Some(width) = view.width_override {
+        return width.max(0);
+    }
     if view.text.is_empty() {
         return 0;
     }
@@ -351,6 +428,85 @@ fn estimate_text_width(text: &str, style: &ModuleStyle) -> i32 {
         .map(|ch| if ch.is_ascii() { 0.62_f32 } else { 1.0_f32 })
         .sum::<f32>();
     (em * style.font_size).ceil() as i32
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_native_argb_pixmap(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    target_size: i32,
+    source_width: i32,
+    source_height: i32,
+    pixels: &[u8],
+) {
+    if target_size <= 0 || source_width <= 0 || source_height <= 0 {
+        return;
+    }
+    let sw = source_width as usize;
+    let sh = source_height as usize;
+    if pixels.len() < sw.saturating_mul(sh).saturating_mul(4) {
+        return;
+    }
+
+    let (draw_w, draw_h) = if source_width >= source_height {
+        (
+            target_size,
+            ((source_height as i64 * target_size as i64) / source_width as i64)
+                .max(1)
+                .min(target_size as i64) as i32,
+        )
+    } else {
+        (
+            ((source_width as i64 * target_size as i64) / source_height as i64)
+                .max(1)
+                .min(target_size as i64) as i32,
+            target_size,
+        )
+    };
+    let x0 = x.saturating_add((target_size - draw_w) / 2);
+    let y0 = y.saturating_add((target_size - draw_h) / 2);
+
+    for dy in 0..draw_h {
+        let sy = (dy as i64 * source_height as i64 / draw_h as i64) as usize;
+        for dx in 0..draw_w {
+            let sx = (dx as i64 * source_width as i64 / draw_w as i64) as usize;
+            let offset = (sy * sw + sx) * 4;
+            let (r, g, b, a) = if cfg!(target_endian = "little") {
+                (
+                    pixels[offset + 2],
+                    pixels[offset + 1],
+                    pixels[offset],
+                    pixels[offset + 3],
+                )
+            } else {
+                (
+                    pixels[offset + 1],
+                    pixels[offset + 2],
+                    pixels[offset + 3],
+                    pixels[offset],
+                )
+            };
+            blend_pixel_rgba(
+                canvas,
+                width,
+                height,
+                x0.saturating_add(dx),
+                y0.saturating_add(dy),
+                [r, g, b, a],
+            );
+        }
+    }
+}
+
+fn blend_pixel_rgba(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, rgba: [u8; 4]) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+    let offset = ((y as u32 * width + x as u32) * 4) as usize;
+    blend_at(&mut canvas[offset..offset + 4], rgba);
 }
 
 fn fill_rect(canvas: &mut [u8], width: u32, height: u32, rect: Rect, rgba: [u8; 4]) {
