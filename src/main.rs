@@ -24,6 +24,7 @@ fn print_help() {
     println!("  mhyprbar --status        show status of the running bar");
     println!("  mhyprbar --tray-list     list current tray items");
     println!("  mhyprbar --tray-menu N   open tray item N menu (debug)");
+    println!("  mhyprbar --tray-tooltip N show tray item N tooltip (debug)");
     println!("  mhyprbar --quit          stop the running bar");
     println!("  mhyprbar --list-modules  list modules compiled into this binary");
     println!("  mhyprbar --check-config  validate bar.toml and all compiled module configs");
@@ -84,6 +85,17 @@ fn run() -> Result<()> {
                 bail!("too many arguments for --tray-menu");
             }
             run_control(ipc::Request::TrayMenuOpen { index })?;
+        }
+        Some("--tray-tooltip") => {
+            let index = args
+                .next()
+                .context("--tray-tooltip requires an index")?
+                .parse()
+                .context("invalid tray index")?;
+            if args.next().is_some() {
+                bail!("too many arguments for --tray-tooltip");
+            }
+            run_control(ipc::Request::TrayTooltipOpen { index })?;
         }
         Some("--quit") => run_control(ipc::Request::Quit)?,
         Some("--tray-menu-click") => {

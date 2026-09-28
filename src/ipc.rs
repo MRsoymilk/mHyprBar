@@ -18,6 +18,7 @@ pub enum Request {
     Quit,
     TrayList,
     TrayMenuOpen { index: usize },
+    TrayTooltipOpen { index: usize },
     TrayMenuClick { token: u64, node_id: i32 },
 }
 
@@ -29,6 +30,7 @@ impl Request {
             Self::Quit => "quit\n".into(),
             Self::TrayList => "tray-list\n".into(),
             Self::TrayMenuOpen { index } => format!("tray-menu-open {index}\n"),
+            Self::TrayTooltipOpen { index } => format!("tray-tooltip-open {index}\n"),
             Self::TrayMenuClick { token, node_id } => {
                 format!("tray-menu-click {token} {node_id}\n")
             }
@@ -51,6 +53,13 @@ impl Request {
                             return None;
                         }
                         Some(Self::TrayMenuOpen { index })
+                    }
+                    "tray-tooltip-open" => {
+                        let index = fields.next()?.parse().ok()?;
+                        if fields.next().is_some() {
+                            return None;
+                        }
+                        Some(Self::TrayTooltipOpen { index })
                     }
                     "tray-menu-click" => {
                         let token = fields.next()?.parse().ok()?;
@@ -149,6 +158,10 @@ mod tests {
         assert_eq!(
             Request::parse(b"tray-menu-open 3\n"),
             Some(Request::TrayMenuOpen { index: 3 })
+        );
+        assert_eq!(
+            Request::parse(b"tray-tooltip-open 2\n"),
+            Some(Request::TrayTooltipOpen { index: 2 })
         );
         assert_eq!(
             Request::parse(b"tray-menu-click 42 -7\n"),

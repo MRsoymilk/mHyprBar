@@ -77,7 +77,7 @@ compile-time selectable integrations:
 
 - `audio` uses `wpctl` and therefore requires a working PipeWire/WirePlumber session;
 - `mpris` uses `playerctl` and an MPRIS-capable media player;
-- `tray` adds one direct Rust dependency, `rustsni`, over the session D-Bus. `rustsni` is poll-friendly and uses pure-Rust `rustbus`; mHyprBar does not use GTK, Qt, Tokio, libdbus, or an image-decoding crate.
+- `tray` adds one direct Rust dependency, `rustsni`, over the session D-Bus. It is vendored at `vendor/rustsni` with bounded synchronous D-Bus waits so a non-responsive tray application cannot freeze the bar; it still uses pure-Rust `rustbus`, with no GTK, Qt, Tokio, libdbus, or image-decoding crate.
 
 Enable or disable these modules in `build.modules.toml` as needed. Battery discovery is
 native through `/sys/class/power_supply`; `device = "auto"` hides the module silently when no
@@ -161,6 +161,7 @@ Current tray interaction supports:
 - middle-click `SecondaryActivate`;
 - horizontal/vertical wheel forwarding through `Scroll`;
 - `ItemIsMenu` items prefer their menu;
+- delayed hover tooltip using SNI `ToolTip.title/text`, falling back to the item title/id;
 - hidden passive items by default.
 
 ~~~toml
@@ -168,6 +169,21 @@ Current tray interaction supports:
 icon_size = 18
 spacing = 6
 show_passive = false
+
+[tooltip]
+enabled = true
+delay_ms = 350
+offset = 6
+max_chars = 96
+
+[tooltip.style]
+foreground = "#F2F2F2"
+background = "#202020EE"
+font_family = "sans-serif"
+font_size = 12.0
+padding_x = 8
+padding_y = 5
+min_width = 0
 ~~~
 
 Items that expose only `IconName` are resolved from XDG icon directories. SVG theme icons are
@@ -180,6 +196,14 @@ The DBusMenu bridge starts mHyprMenu in forced one-shot mode with a temporary ru
 configuration under `$XDG_RUNTIME_DIR`. First-level and second-level menus remain cascading;
 deeper DBusMenu levels are flattened into the second level with `›` prefixes. Separators and
 check/radio state are preserved in the generated labels.
+
+Tooltips are independent `Layer::Overlay` surfaces on the same output as the hovered bar. They do
+not reserve screen space and are destroyed when the pointer leaves the tray, changes item, clicks,
+or reloads the tray config. `--tray-tooltip N` forces item `N`'s tooltip for debugging.
+
+mHyprBar vendors the same `rustsni 0.2.2` source under `vendor/rustsni` with bounded synchronous
+D-Bus waits. A non-responsive StatusNotifierItem therefore times out instead of freezing the bar's
+single-threaded calloop event loop.
 
 `mhyprbar --status` reports `tray_items=N`, which is useful for distinguishing an empty tray
 from a rendering problem.
@@ -232,6 +256,7 @@ mhyprbar --status
 mhyprbar --reload
 mhyprbar --tray-list
 mhyprbar --tray-menu 0
+mhyprbar --tray-tooltip 0
 mhyprbar --quit
 ~~~
 
@@ -245,9 +270,10 @@ mHyprBar.
 `--status` prints the running PID, output count, position/height, tray item count, compiled
 modules and current left/center/right layout.
 
-`--tray-list` prints the current visual tray order with index, title, menu availability and SNI
-status. `--tray-menu N` opens item `N`'s DBusMenu through mHyprMenu and is intended as a
-debug/control equivalent of right-clicking that tray icon.
+`--tray-list` prints the current visual tray order with index, title, menu availability, SNI
+status, tooltip text, and per-output tray x ranges. `--tray-menu N` opens item `N`'s DBusMenu
+through mHyprMenu. `--tray-tooltip N` forces item `N`'s tooltip. Both are debug/control
+equivalents of the normal pointer interactions.
 
 ## Run
 

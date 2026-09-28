@@ -16,3 +16,6 @@ libc = "0.2"
 smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
 wayland-client = "0.31.14"
 rustsni = "0.2.2"
+
+[patch.crates-io]
+rustsni = { path = "vendor/rustsni" }

@@ -147,8 +147,12 @@ mod enabled {
                     item.title.as_str()
                 };
                 let has_menu = item.has_menu();
+                let tooltip = self
+                    .tooltip_text_for_index(index)
+                    .unwrap_or_default()
+                    .replace(['\t', '\n'], " ");
                 output.push_str(&format!(
-                    "{index}\t{title}\tmenu={}\tstatus={}\n",
+                    "{index}\t{title}\tmenu={}\tstatus={}\ttooltip={tooltip:?}\n",
                     u8::from(has_menu),
                     item.status
                 ));
@@ -232,16 +236,67 @@ mod enabled {
                 .collect()
         }
 
-        pub fn item_at(&self, x: i32) -> Option<&ItemId> {
+        pub fn item_index_at(&self, x: i32) -> Option<usize> {
             let mut cursor = self.padding_x();
-            for id in &self.order {
+            for (index, _) in self.order.iter().enumerate() {
                 let end = cursor.saturating_add(self.config.icon_size);
                 if x >= cursor && x < end {
-                    return Some(id);
+                    return Some(index);
                 }
                 cursor = end.saturating_add(self.config.spacing);
             }
             None
+        }
+
+        pub fn item_at(&self, x: i32) -> Option<&ItemId> {
+            self.item_index_at(x)
+                .and_then(|index| self.order.get(index))
+        }
+
+        pub fn item_key_for_index(&self, index: usize) -> Option<&str> {
+            self.order.get(index).map(|id| id.0.as_str())
+        }
+
+        pub fn tooltip_enabled(&self) -> bool {
+            self.config.tooltip.enabled
+        }
+
+        pub fn tooltip_delay(&self) -> Duration {
+            Duration::from_millis(self.config.tooltip.delay_ms)
+        }
+
+        pub fn tooltip_offset(&self) -> i32 {
+            self.config.tooltip.offset
+        }
+
+        pub fn tooltip_style(&self) -> &crate::config::ModuleStyle {
+            &self.config.tooltip.style
+        }
+
+        pub fn tooltip_text_for_index(&self, index: usize) -> Option<String> {
+            let id = self.order.get(index)?;
+            let item = self.host.items().get(id)?;
+
+            let title = if item.tooltip.title.trim().is_empty() {
+                item.title.trim()
+            } else {
+                item.tooltip.title.trim()
+            };
+            let description = strip_tooltip_markup(&item.tooltip.text);
+
+            let mut text = match (title.is_empty(), description.is_empty()) {
+                (false, false) => format!("{title} — {description}"),
+                (false, true) => title.to_owned(),
+                (true, false) => description,
+                (true, true) => {
+                    if item.item_id.trim().is_empty() {
+                        return None;
+                    }
+                    item.item_id.trim().to_owned()
+                }
+            };
+            text = truncate_chars(&text, self.config.tooltip.max_chars);
+            (!text.trim().is_empty()).then_some(text)
         }
 
         pub fn activate_at(&mut self, x: i32, screen_x: i32, screen_y: i32) -> Result<bool> {
@@ -640,6 +695,38 @@ mod enabled {
             .map(Path::to_path_buf)
     }
 
+    fn strip_tooltip_markup(text: &str) -> String {
+        let mut output = String::with_capacity(text.len());
+        let mut in_tag = false;
+        for ch in text.chars() {
+            match ch {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ if !in_tag => output.push(ch),
+                _ => {}
+            }
+        }
+        output
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn truncate_chars(text: &str, max_chars: usize) -> String {
+        if text.chars().count() <= max_chars {
+            return text.to_owned();
+        }
+        let keep = max_chars.saturating_sub(1);
+        let mut value = text.chars().take(keep).collect::<String>();
+        value.push('…');
+        value
+    }
+
     fn icon_name(item: &TrayItem) -> &str {
         if item.status == "NeedsAttention" && !item.attention_icon_name.is_empty() {
             &item.attention_icon_name
@@ -836,7 +923,7 @@ mod enabled {
 
         use super::{
             DynamicMenuConfig, build_dynamic_menu_items, choose_pixmap, icon_path_score,
-            rgba_to_native_argb,
+            rgba_to_native_argb, strip_tooltip_markup, truncate_chars,
         };
 
         fn test_item() -> TrayItem {
@@ -902,6 +989,16 @@ mod enabled {
             } else {
                 assert_eq!(value, vec![0xFF, 0x11, 0x22, 0x33]);
             }
+        }
+
+        #[test]
+        fn normalizes_tooltip_markup_and_length() {
+            assert_eq!(
+                strip_tooltip_markup("<b>Remmina</b> &amp; <i>Server</i>"),
+                "Remmina & Server"
+            );
+            assert_eq!(truncate_chars("abcdef", 4), "abc…");
+            assert_eq!(truncate_chars("中文测试", 3), "中文…");
         }
 
         #[test]
@@ -972,6 +1069,35 @@ impl TrayState {
 
     pub fn poll(&mut self) -> anyhow::Result<bool> {
         Ok(false)
+    }
+
+    pub fn item_index_at(&self, _x: i32) -> Option<usize> {
+        None
+    }
+
+    pub fn item_key_for_index(&self, _index: usize) -> Option<&str> {
+        None
+    }
+
+    pub fn tooltip_enabled(&self) -> bool {
+        false
+    }
+
+    pub fn tooltip_delay(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
+
+    pub fn tooltip_offset(&self) -> i32 {
+        0
+    }
+
+    pub fn tooltip_style(&self) -> &'static crate::config::ModuleStyle {
+        static STYLE: std::sync::OnceLock<crate::config::ModuleStyle> = std::sync::OnceLock::new();
+        STYLE.get_or_init(crate::config::ModuleStyle::default)
+    }
+
+    pub fn tooltip_text_for_index(&self, _index: usize) -> Option<String> {
+        None
     }
 
     pub fn activate_at(&mut self, _x: i32, _screen_x: i32, _screen_y: i32) -> anyhow::Result<bool> {

@@ -121,6 +121,91 @@ impl Renderer {
         Ok(style.strip_width())
     }
 
+    pub fn tooltip_size(text: &str, style: &ModuleStyle) -> (u32, u32) {
+        let estimated_text = (text.chars().count() as f32 * style.font_size * 0.62)
+            .ceil()
+            .max(1.0) as i32;
+        let max_text_width = 440;
+        let text_width = estimated_text.min(max_text_width).max(1);
+        let lines = ((estimated_text + max_text_width - 1) / max_text_width).clamp(1, 3);
+        let line_height = (style.font_size * 1.35).ceil().max(1.0) as i32;
+        let width = text_width
+            .saturating_add(style.padding_x.max(0).saturating_mul(2))
+            .max(48);
+        let height = lines
+            .saturating_mul(line_height)
+            .saturating_add(style.padding_y.max(0).saturating_mul(2))
+            .max(24);
+        (width as u32, height as u32)
+    }
+
+    pub fn draw_tooltip(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        text: &str,
+        style: &ModuleStyle,
+    ) -> Result<()> {
+        canvas.fill(0);
+        let background = style.background_rgba()?;
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: 0,
+                y: 0,
+                w: width as i32,
+                h: height as i32,
+            },
+            background,
+        );
+
+        let foreground = style.foreground_rgba()?;
+        let color = Color::rgba(foreground[0], foreground[1], foreground[2], foreground[3]);
+        let padding_x = style.padding_x.max(0);
+        let padding_y = style.padding_y.max(0);
+        let content_width = width
+            .saturating_sub(padding_x.saturating_mul(2) as u32)
+            .max(1);
+        let content_height = height
+            .saturating_sub(padding_y.saturating_mul(2) as u32)
+            .max(1);
+        let line_height = (style.font_size * 1.35).max(style.font_size);
+
+        let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(style.font_size, line_height));
+        buffer.set_size(Some(content_width as f32), Some(content_height as f32));
+        let family = match style.font_family.as_str() {
+            "sans-serif" => Family::SansSerif,
+            "serif" => Family::Serif,
+            "monospace" => Family::Monospace,
+            "cursive" => Family::Cursive,
+            "fantasy" => Family::Fantasy,
+            name => Family::Name(name),
+        };
+        let attrs = Attrs::new().family(family);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.draw(
+            &mut self.fonts,
+            &mut self.cache,
+            color,
+            |x, y, w, h, pixel| {
+                blend_block(
+                    canvas,
+                    width,
+                    height,
+                    padding_x.saturating_add(x),
+                    padding_y.saturating_add(y),
+                    w,
+                    h,
+                    pixel,
+                );
+            },
+        );
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw_workspace_label(
         &mut self,

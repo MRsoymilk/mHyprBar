@@ -1,4 +1,7 @@
-use std::io;
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use smithay_client_toolkit::{
@@ -104,6 +107,8 @@ pub fn run(config: BarConfig) -> Result<()> {
         renderer: Renderer::new(),
         hyprland,
         tray,
+        tray_hover: None,
+        tooltip: None,
         exit: false,
     };
 
@@ -125,6 +130,7 @@ pub fn run(config: BarConfig) -> Result<()> {
                     };
                     if changed {
                         app.sync_tray_width();
+                        app.refresh_tray_hover_after_change();
                         app.draw_all();
                     }
                     Ok(PostAction::Continue)
@@ -177,11 +183,7 @@ pub fn run(config: BarConfig) -> Result<()> {
                                     Err(error) => format!("error: {error:#}\n"),
                                 },
                                 Ok(Some(Request::Status)) => app.status_text(),
-                                Ok(Some(Request::TrayList)) => app
-                                    .tray
-                                    .as_ref()
-                                    .map(TrayState::list_text)
-                                    .unwrap_or_default(),
+                                Ok(Some(Request::TrayList)) => app.tray_list_text(),
                                 Ok(Some(Request::TrayMenuOpen { index })) => {
                                     match app.tray.as_mut() {
                                         Some(tray) => match tray.open_menu_index(index) {
@@ -189,6 +191,12 @@ pub fn run(config: BarConfig) -> Result<()> {
                                             Err(error) => format!("error: {error:#}\n"),
                                         },
                                         None => "error: tray is unavailable\n".to_owned(),
+                                    }
+                                }
+                                Ok(Some(Request::TrayTooltipOpen { index })) => {
+                                    match app.force_tray_tooltip(index) {
+                                        Ok(()) => "ok\n".to_owned(),
+                                        Err(error) => format!("error: {error:#}\n"),
                                     }
                                 }
                                 Ok(Some(Request::TrayMenuClick { token, node_id })) => {
@@ -224,13 +232,17 @@ pub fn run(config: BarConfig) -> Result<()> {
         .context("failed to register control socket")?;
 
     while !app.exit {
-        let timeout = app.modules.next_timeout();
+        let mut timeout = app.modules.next_timeout();
+        if let Some(tooltip_timeout) = app.tray_hover_timeout() {
+            timeout = timeout.min(tooltip_timeout);
+        }
         event_loop
             .dispatch(Some(timeout), &mut app)
             .context("event loop dispatch failed")?;
         if app.modules.refresh_due() {
             app.draw_all();
         }
+        app.maybe_show_tray_tooltip(&qh);
     }
 
     Ok(())
@@ -243,6 +255,25 @@ struct BarSurface {
     width: u32,
     height: u32,
     configured: bool,
+}
+
+struct TrayHover {
+    bar_index: usize,
+    item_index: usize,
+    item_key: String,
+    local_x: f64,
+    deadline: Instant,
+    text: String,
+}
+
+struct TooltipSurface {
+    layer: LayerSurface,
+    text: String,
+    width: u32,
+    height: u32,
+    configured: bool,
+    bar_index: usize,
+    item_index: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -285,6 +316,8 @@ struct App {
     renderer: Renderer,
     hyprland: Snapshot,
     tray: Option<TrayState>,
+    tray_hover: Option<TrayHover>,
+    tooltip: Option<TooltipSurface>,
     exit: bool,
 }
 
@@ -343,6 +376,7 @@ impl App {
     }
 
     fn remove_output(&mut self, output: &wl_output::WlOutput) {
+        self.clear_tray_hover();
         self.bars.retain(|bar| &bar.output != output);
     }
 
@@ -357,11 +391,231 @@ impl App {
         let _ = self.modules.set_width_override("tray", Some(width));
     }
 
+    fn tray_hover_timeout(&self) -> Option<Duration> {
+        let hover = self.tray_hover.as_ref()?;
+        if self.tooltip.as_ref().is_some_and(|tooltip| {
+            tooltip.bar_index == hover.bar_index && tooltip.item_index == hover.item_index
+        }) {
+            return None;
+        }
+        Some(hover.deadline.saturating_duration_since(Instant::now()))
+    }
+
+    fn update_tray_hover(&mut self, bar_index: usize, x: f64) {
+        let Some(bar) = self.bars.get(bar_index) else {
+            self.clear_tray_hover();
+            return;
+        };
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar.width, workspace_visible, &self.config, &self.modules)
+        else {
+            self.clear_tray_hover();
+            return;
+        };
+        if hit.name != "tray" {
+            self.clear_tray_hover();
+            return;
+        }
+
+        let Some(tray) = self.tray.as_ref() else {
+            self.clear_tray_hover();
+            return;
+        };
+        if !tray.tooltip_enabled() {
+            self.clear_tray_hover();
+            return;
+        }
+        let Some(item_index) = tray.item_index_at(hit.offset_x) else {
+            self.clear_tray_hover();
+            return;
+        };
+        let Some(item_key) = tray.item_key_for_index(item_index).map(str::to_owned) else {
+            self.clear_tray_hover();
+            return;
+        };
+        let Some(text) = tray.tooltip_text_for_index(item_index) else {
+            self.clear_tray_hover();
+            return;
+        };
+        let delay = tray.tooltip_delay();
+
+        if let Some(hover) = self.tray_hover.as_mut()
+            && hover.bar_index == bar_index
+            && hover.item_key == item_key
+        {
+            let content_changed = hover.text != text || hover.item_index != item_index;
+            hover.item_index = item_index;
+            hover.local_x = x;
+            hover.text = text;
+            if content_changed {
+                self.tooltip = None;
+            }
+            return;
+        }
+
+        self.tooltip = None;
+        self.tray_hover = Some(TrayHover {
+            bar_index,
+            item_index,
+            item_key,
+            local_x: x,
+            deadline: Instant::now() + delay,
+            text,
+        });
+    }
+
+    fn refresh_tray_hover_after_change(&mut self) {
+        let Some((bar_index, local_x)) = self
+            .tray_hover
+            .as_ref()
+            .map(|hover| (hover.bar_index, hover.local_x))
+        else {
+            return;
+        };
+        self.update_tray_hover(bar_index, local_x);
+    }
+
+    fn clear_tray_hover(&mut self) {
+        self.tray_hover = None;
+        self.tooltip = None;
+    }
+
+    fn maybe_show_tray_tooltip(&mut self, qh: &QueueHandle<Self>) {
+        let Some(hover) = self.tray_hover.as_ref() else {
+            return;
+        };
+        if Instant::now() < hover.deadline {
+            return;
+        }
+        if self.tooltip.as_ref().is_some_and(|tooltip| {
+            tooltip.bar_index == hover.bar_index && tooltip.item_index == hover.item_index
+        }) {
+            return;
+        }
+
+        let Some(bar) = self.bars.get(hover.bar_index) else {
+            self.clear_tray_hover();
+            return;
+        };
+        let Some(tray) = self.tray.as_ref() else {
+            self.clear_tray_hover();
+            return;
+        };
+
+        let style = tray.tooltip_style().clone();
+        let offset = tray.tooltip_offset();
+        let text = hover.text.clone();
+        let (width, height) = Renderer::tooltip_size(&text, &style);
+        let max_left = bar.width.saturating_sub(width) as i32;
+        let left = (hover.local_x.round() as i32 - width as i32 / 2).clamp(0, max_left.max(0));
+        let output = bar.output.clone();
+        let bar_height = bar.height as i32;
+        let bar_index = hover.bar_index;
+        let item_index = hover.item_index;
+
+        self.tooltip = None;
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-tooltip"),
+            Some(&output),
+        );
+        if self.config.position == "bottom" {
+            layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+            layer.set_margin(
+                0,
+                0,
+                self.config
+                    .margin_bottom
+                    .saturating_add(bar_height)
+                    .saturating_add(offset),
+                left,
+            );
+        } else {
+            layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+            layer.set_margin(
+                self.config
+                    .margin_top
+                    .saturating_add(bar_height)
+                    .saturating_add(offset),
+                0,
+                0,
+                left,
+            );
+        }
+        layer.set_size(width, height);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(0);
+        layer.commit();
+
+        self.tooltip = Some(TooltipSurface {
+            layer,
+            text,
+            width,
+            height,
+            configured: false,
+            bar_index,
+            item_index,
+        });
+    }
+
+    fn draw_tooltip(&mut self) {
+        let Some(tooltip) = self.tooltip.as_ref() else {
+            return;
+        };
+        if !tooltip.configured || tooltip.width == 0 || tooltip.height == 0 {
+            return;
+        }
+        let Some(tray) = self.tray.as_ref() else {
+            return;
+        };
+
+        let surface = tooltip.layer.wl_surface().clone();
+        let layer = tooltip.layer.clone();
+        let width = tooltip.width;
+        let height = tooltip.height;
+        let text = tooltip.text.clone();
+        let style = tray.tooltip_style().clone();
+        let stride = width as i32 * 4;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create tooltip SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) = self
+            .renderer
+            .draw_tooltip(canvas, width, height, &text, &style)
+        {
+            eprintln!("mhyprbar: tooltip render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach tooltip SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
     fn reload_config(&mut self) -> Result<()> {
         let config = crate::validate_config().context("reload validation failed")?;
         let background = config.background_rgba()?;
         let mut modules = ModuleManager::load()?;
         modules.refresh_due();
+        self.clear_tray_hover();
         if let Some(tray) = self.tray.as_mut() {
             tray.reload_config()?;
         }
@@ -398,6 +652,97 @@ impl App {
         self.background = background;
         self.modules = modules;
         self.draw_all();
+        Ok(())
+    }
+
+    fn tray_list_text(&self) -> String {
+        let mut output = self
+            .tray
+            .as_ref()
+            .map(TrayState::list_text)
+            .unwrap_or_default();
+
+        for (bar_index, bar) in self.bars.iter().enumerate() {
+            let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+            let mut start = None;
+            let mut end = None;
+            for x in 0..bar.width as i32 {
+                if render::module_at_x(
+                    x as f64,
+                    bar.width,
+                    workspace_visible,
+                    &self.config,
+                    &self.modules,
+                )
+                .is_some_and(|hit| hit.name == "tray")
+                {
+                    start.get_or_insert(x);
+                    end = Some(x + 1);
+                } else if start.is_some() {
+                    break;
+                }
+            }
+            if let (Some(start), Some(end)) = (start, end) {
+                output.push_str(&format!(
+                    "bar{bar_index}\toutput={}\ttray_x={start}..{end}\n",
+                    bar.output_name.as_deref().unwrap_or("?")
+                ));
+            }
+        }
+
+        output
+    }
+
+    fn force_tray_tooltip(&mut self, item_index: usize) -> Result<()> {
+        let tray = self.tray.as_ref().context("tray is unavailable")?;
+        anyhow::ensure!(
+            item_index < tray.len(),
+            "tray index {item_index} is out of range"
+        );
+        let text = tray
+            .tooltip_text_for_index(item_index)
+            .context("tray item has no tooltip text")?;
+        let item_key = tray
+            .item_key_for_index(item_index)
+            .context("tray item has no stable id")?
+            .to_owned();
+        let padding_x = tray.padding_x();
+        let icon_size = tray.icon_size();
+        let spacing = tray.spacing();
+
+        let bar_index = 0usize;
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("no bar output is available")?;
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let tray_start = (0..bar.width as i32)
+            .find(|x| {
+                render::module_at_x(
+                    *x as f64,
+                    bar.width,
+                    workspace_visible,
+                    &self.config,
+                    &self.modules,
+                )
+                .is_some_and(|hit| hit.name == "tray")
+            })
+            .context("tray module is not visible on the first bar")?;
+
+        let local_x = tray_start
+            .saturating_add(padding_x)
+            .saturating_add(item_index as i32 * icon_size.saturating_add(spacing))
+            .saturating_add(icon_size / 2) as f64;
+
+        self.tooltip = None;
+        self.tray_hover = Some(TrayHover {
+            bar_index,
+            item_index,
+            item_key,
+            local_x,
+            deadline: Instant::now(),
+            text,
+        });
         Ok(())
     }
 
@@ -650,6 +995,15 @@ impl CompositorHandler for App {
 
 impl LayerShellHandler for App {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, layer: &LayerSurface) {
+        if self
+            .tooltip
+            .as_ref()
+            .is_some_and(|tooltip| tooltip.layer.wl_surface() == layer.wl_surface())
+        {
+            self.tooltip = None;
+            return;
+        }
+
         self.bars
             .retain(|bar| bar.layer.wl_surface() != layer.wl_surface());
     }
@@ -662,6 +1016,24 @@ impl LayerShellHandler for App {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        if self
+            .tooltip
+            .as_ref()
+            .is_some_and(|tooltip| tooltip.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(tooltip) = self.tooltip.as_mut() {
+                if configure.new_size.0 > 0 {
+                    tooltip.width = configure.new_size.0;
+                }
+                if configure.new_size.1 > 0 {
+                    tooltip.height = configure.new_size.1;
+                }
+                tooltip.configured = true;
+            }
+            self.draw_tooltip();
+            return;
+        }
+
         let Some(index) = self
             .bars
             .iter()
@@ -736,30 +1108,45 @@ impl PointerHandler for App {
             };
 
             match event.kind {
-                PointerEventKind::Press { button, .. } => match button {
-                    BTN_LEFT => {
-                        if !self.activate_workspace(index, event.position.0) {
-                            self.activate_module_at(index, event.position.0, event.position.1);
+                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                    self.update_tray_hover(index, event.position.0);
+                }
+                PointerEventKind::Leave { .. } => {
+                    if self
+                        .tray_hover
+                        .as_ref()
+                        .is_some_and(|hover| hover.bar_index == index)
+                    {
+                        self.clear_tray_hover();
+                    }
+                }
+                PointerEventKind::Press { button, .. } => {
+                    self.clear_tray_hover();
+                    match button {
+                        BTN_LEFT => {
+                            if !self.activate_workspace(index, event.position.0) {
+                                self.activate_module_at(index, event.position.0, event.position.1);
+                            }
                         }
+                        BTN_RIGHT => {
+                            let _ = self.tray_action_at(
+                                index,
+                                event.position.0,
+                                event.position.1,
+                                TrayPointerAction::ContextMenu,
+                            );
+                        }
+                        BTN_MIDDLE => {
+                            let _ = self.tray_action_at(
+                                index,
+                                event.position.0,
+                                event.position.1,
+                                TrayPointerAction::Secondary,
+                            );
+                        }
+                        _ => {}
                     }
-                    BTN_RIGHT => {
-                        let _ = self.tray_action_at(
-                            index,
-                            event.position.0,
-                            event.position.1,
-                            TrayPointerAction::ContextMenu,
-                        );
-                    }
-                    BTN_MIDDLE => {
-                        let _ = self.tray_action_at(
-                            index,
-                            event.position.0,
-                            event.position.1,
-                            TrayPointerAction::Secondary,
-                        );
-                    }
-                    _ => {}
-                },
+                }
                 PointerEventKind::Axis {
                     horizontal,
                     vertical,
