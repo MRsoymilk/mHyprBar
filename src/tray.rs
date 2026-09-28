@@ -360,10 +360,11 @@ mod enabled {
                 self.host.items().contains_key(&id),
                 "tray menu item disappeared"
             );
-            self.menu_target = None;
             self.host
                 .menu_click(&id, node_id)
-                .context("tray DBusMenu click failed")
+                .context("tray DBusMenu click failed")?;
+            self.menu_target = None;
+            Ok(())
         }
 
         pub fn secondary_activate_at(
@@ -472,7 +473,7 @@ mod enabled {
     }
 
     fn launch_dynamic_menu(nodes: &[MenuNode], generation: u64) -> Result<()> {
-        let bar_exe = env::current_exe().context("failed to resolve mHyprBar executable")?;
+        let bar_exe = menu_callback_executable()?;
         let items = build_dynamic_menu_items(nodes, generation, &bar_exe);
         ensure!(!items.is_empty(), "tray DBusMenu contains no visible items");
 
@@ -609,6 +610,28 @@ mod enabled {
             result.push(ch);
         }
         result
+    }
+
+    fn menu_callback_executable() -> Result<PathBuf> {
+        let proc_exe = PathBuf::from(format!("/proc/{}/exe", std::process::id()));
+        if proc_exe.exists() {
+            return Ok(proc_exe);
+        }
+
+        let current = env::current_exe().context("failed to resolve mHyprBar executable")?;
+        if current.exists() {
+            return Ok(current);
+        }
+
+        let current_text = current.to_string_lossy();
+        if let Some(path) = current_text.strip_suffix(" (deleted)") {
+            let path = PathBuf::from(path);
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+
+        bail!("no executable path is available for tray menu callbacks")
     }
 
     fn menu_callback_command(bar_exe: &Path, generation: u64, node_id: i32) -> String {
@@ -917,7 +940,7 @@ mod enabled {
 
     #[cfg(test)]
     mod tests {
-        use std::path::Path;
+        use std::path::{Path, PathBuf};
 
         use rustsni::{IconPixmap, ItemId, MenuNode, ToolTip, TrayItem};
 
@@ -999,6 +1022,15 @@ mod enabled {
             );
             assert_eq!(truncate_chars("abcdef", 4), "abc…");
             assert_eq!(truncate_chars("中文测试", 3), "中文…");
+        }
+
+        #[test]
+        fn callback_executable_uses_running_proc_entry() {
+            let path = super::menu_callback_executable().expect("callback executable");
+            assert_eq!(
+                path,
+                PathBuf::from(format!("/proc/{}/exe", std::process::id()))
+            );
         }
 
         #[test]
