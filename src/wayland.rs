@@ -705,6 +705,39 @@ impl App {
     fn close_tray_popup(&mut self) {}
 
     #[cfg(mhypr_module = "tray")]
+    fn tray_popup_matches_item_at(&self, bar_index: usize, x: f64) -> bool {
+        let Some(bar) = self.bars.get(bar_index) else {
+            return false;
+        };
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar.width, workspace_visible, &self.config, &self.modules)
+        else {
+            return false;
+        };
+        if hit.name != "tray" {
+            return false;
+        }
+
+        let Some(item_id) = self
+            .tray
+            .as_ref()
+            .and_then(|tray| tray.item_id_at(hit.offset_x))
+        else {
+            return false;
+        };
+
+        self.tray_popup
+            .as_ref()
+            .is_some_and(|popup| popup.item_id == item_id)
+    }
+
+    #[cfg(not(mhypr_module = "tray"))]
+    fn tray_popup_matches_item_at(&self, _bar_index: usize, _x: f64) -> bool {
+        false
+    }
+
+    #[cfg(mhypr_module = "tray")]
     fn open_tray_popup_at(
         &mut self,
         qh: &QueueHandle<Self>,
@@ -786,6 +819,15 @@ impl App {
             .as_mut()
             .context("tray is unavailable")?
             .menu_request_index(index)?;
+        if self
+            .tray_popup
+            .as_ref()
+            .is_some_and(|popup| popup.item_id == request.item_id)
+        {
+            self.close_tray_popup();
+            return Ok(());
+        }
+
         let bar_index = 0usize;
         let bar = self
             .bars
@@ -1469,13 +1511,17 @@ impl PointerHandler for App {
                             }
                         }
                         BTN_RIGHT => {
-                            let _ = self.open_tray_popup_at(
-                                qh,
-                                index,
-                                event.position.0,
-                                event.position.1,
-                                false,
-                            );
+                            if self.tray_popup_matches_item_at(index, event.position.0) {
+                                self.close_tray_popup();
+                            } else {
+                                let _ = self.open_tray_popup_at(
+                                    qh,
+                                    index,
+                                    event.position.0,
+                                    event.position.1,
+                                    false,
+                                );
+                            }
                         }
                         BTN_MIDDLE => {
                             let _ = self.tray_action_at(

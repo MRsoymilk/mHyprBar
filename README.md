@@ -293,8 +293,8 @@ mHyprBar.
 modules and current left/center/right layout.
 
 `--tray-list` prints the current visual tray order with index, title, menu availability, SNI
-status, tooltip text, and per-output tray x ranges. `--tray-menu N` opens item `N`'s
-in-process DBusMenu overlay. `--tray-tooltip N` forces item `N`'s tooltip. Both are
+status, tooltip text, and per-output tray x ranges. `--tray-menu N` toggles item `N`'s
+in-process DBusMenu overlay; normal right-click uses the same open/close toggle behavior. `--tray-tooltip N` forces item `N`'s tooltip. Both are
 debug/control equivalents of the normal pointer interactions.
 
 ## Run

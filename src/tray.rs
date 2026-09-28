@@ -252,6 +252,10 @@ mod enabled {
                 .and_then(|index| self.order.get(index))
         }
 
+        pub fn item_id_at(&self, x: i32) -> Option<ItemId> {
+            self.item_at(x).cloned()
+        }
+
         pub fn item_key_for_index(&self, index: usize) -> Option<&str> {
             self.order.get(index).map(|id| id.0.as_str())
         }
