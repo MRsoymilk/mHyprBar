@@ -1,7 +1,5 @@
-# The bar shows the filesystem containing the current user's home directory.
-primary = "$HOME"
-
-# Clicking the bar shows these paths.
+# The bar shows aggregate usage across local disk filesystems.
+# Clicking the bar shows only these configured paths.
 paths = ["/var", "/home", "/boot", "/"]
 
 interval_ms = 5000

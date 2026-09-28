@@ -1,4 +1,4 @@
-use std::{env, ffi::CString, mem::MaybeUninit, time::Duration};
+use std::{collections::HashSet, env, ffi::CString, fs, mem::MaybeUninit, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -11,8 +11,6 @@ pub const CONFIG_FILE: &str = "modules/disk.toml";
 
 #[derive(Debug, Deserialize)]
 struct DiskConfig {
-    #[serde(default)]
-    primary: Option<String>,
     #[serde(default)]
     paths: Vec<String>,
     #[serde(default)]
@@ -71,7 +69,6 @@ pub struct DiskVisual {
 
 pub struct DiskModule {
     config: DiskConfig,
-    primary_path: String,
     stats: DiskStats,
     bar_background: [u8; 4],
     bar_fill: [u8; 4],
@@ -99,18 +96,16 @@ impl DiskModule {
             "disk bar_border_width must not be negative"
         );
         config.style.validate()?;
-        let primary_path = resolve_primary_path(&config)?;
         let _ = configured_paths_from(&config)?;
         let _ = crate::disk_popup::DiskPopupConfig::load()?;
 
         let bar_background = config::parse_rgba(&config.bar_background)?;
         let bar_fill = config::parse_rgba(&config.bar_fill)?;
         let bar_border = config::parse_rgba(&config.bar_border)?;
-        let stats = read_mount_stats(&primary_path)?;
+        let stats = read_total_disk_stats()?;
 
         Ok(Self {
             config,
-            primary_path,
             stats,
             bar_background,
             bar_fill,
@@ -134,7 +129,7 @@ impl StatusModule for DiskModule {
     }
 
     fn sample(&mut self) -> Result<String> {
-        self.stats = read_mount_stats(&self.primary_path)?;
+        self.stats = read_total_disk_stats()?;
         self.revision = self.revision.wrapping_add(1);
         Ok(String::new())
     }
@@ -185,17 +180,78 @@ pub(crate) fn read_mount_stats(path: &str) -> Result<DiskStats> {
     })
 }
 
-fn resolve_primary_path(config: &DiskConfig) -> Result<String> {
-    if let Some(primary) = config.primary.as_deref() {
-        return resolve_path(primary);
+fn read_total_disk_stats() -> Result<DiskStats> {
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo")
+        .context("failed to read /proc/self/mountinfo")?;
+    let mut seen_devices = HashSet::new();
+    let mut total_bytes = 0_u128;
+    let mut available_bytes = 0_u128;
+
+    for line in mountinfo.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let Some(separator) = fields.iter().position(|field| *field == "-") else {
+            continue;
+        };
+        if fields.len() <= separator + 2 || fields.len() < 5 {
+            continue;
+        }
+
+        let device = fields[2];
+        let mount_point = decode_mountinfo_field(fields[4]);
+        let fs_type = fields[separator + 1];
+        let source = fields[separator + 2];
+
+        if !is_local_disk_filesystem(fs_type, source) || !seen_devices.insert(device.to_owned()) {
+            continue;
+        }
+
+        let Ok(stats) = read_mount_stats(&mount_point) else {
+            continue;
+        };
+        total_bytes = total_bytes.saturating_add(stats.total_bytes);
+        available_bytes = available_bytes.saturating_add(stats.available_bytes);
     }
-    if let Some(first) = config.paths.first() {
-        return resolve_path(first);
+
+    if total_bytes == 0 {
+        let mut fallback = read_mount_stats("/")?;
+        fallback.mount = "Total".into();
+        return Ok(fallback);
     }
-    if let Some(first) = config.mounts.first() {
-        return resolve_path(first);
-    }
-    resolve_path(config.mount.as_deref().unwrap_or("$HOME"))
+
+    Ok(DiskStats {
+        mount: "Total".into(),
+        total_bytes,
+        available_bytes,
+    })
+}
+
+fn is_local_disk_filesystem(fs_type: &str, source: &str) -> bool {
+    source.starts_with("/dev/")
+        || matches!(
+            fs_type,
+            "ext2"
+                | "ext3"
+                | "ext4"
+                | "xfs"
+                | "btrfs"
+                | "f2fs"
+                | "vfat"
+                | "exfat"
+                | "ntfs"
+                | "ntfs3"
+                | "reiserfs"
+                | "jfs"
+                | "bcachefs"
+                | "zfs"
+        )
+}
+
+fn decode_mountinfo_field(value: &str) -> String {
+    value
+        .replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
 }
 
 fn configured_paths_from(config: &DiskConfig) -> Result<Vec<String>> {
@@ -253,7 +309,7 @@ fn default_bar_border() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_mount_stats, resolve_path};
+    use super::{decode_mountinfo_field, read_mount_stats, read_total_disk_stats, resolve_path};
 
     #[test]
     fn resolves_home_path() {
@@ -263,8 +319,24 @@ mod tests {
     }
 
     #[test]
+    fn decodes_mountinfo_paths() {
+        assert_eq!(
+            decode_mountinfo_field("/media/My\\040Disk"),
+            "/media/My Disk"
+        );
+    }
+
+    #[test]
     fn reads_root_filesystem_stats() {
         let stats = read_mount_stats("/").expect("root fs");
+        assert!(stats.total_bytes > 0);
+        assert!(stats.available_bytes <= stats.total_bytes);
+    }
+
+    #[test]
+    fn aggregates_local_disk_filesystems() {
+        let stats = read_total_disk_stats().expect("total disks");
+        assert_eq!(stats.mount, "Total");
         assert!(stats.total_bytes > 0);
         assert!(stats.available_bytes <= stats.total_bytes);
     }
