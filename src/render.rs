@@ -141,6 +141,209 @@ impl Renderer {
         (width as u32, height as u32)
     }
 
+    #[cfg(mhypr_module = "battery")]
+    pub fn draw_battery_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::battery_popup::BatteryPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let bar_background = cfg.bar_background_rgba()?;
+        let fill = model.fill_color();
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let pad = cfg.padding;
+        let content_x = panel.x + pad;
+        let content_w = (panel.w - pad * 2).max(1);
+        let mut title_style = cfg.style.clone();
+        title_style.font_size = 16.0;
+        let mut muted_style = cfg.style.clone();
+        muted_style.foreground = "#9AA0AA".into();
+        muted_style.font_size = 11.0;
+
+        let mut y = panel.y + pad;
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w - 80,
+                h: cfg.title_height,
+            },
+            "Battery",
+            &title_style,
+            0,
+            0,
+        )?;
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x + content_w - 64,
+                y,
+                w: 64,
+                h: cfg.title_height,
+            },
+            &format!("{:.0}%", model.stats.capacity),
+            &title_style,
+            0,
+            0,
+        )?;
+        y = y.saturating_add(cfg.title_height);
+
+        let progress = Rect {
+            x: content_x,
+            y,
+            w: content_w,
+            h: cfg.progress_height,
+        };
+        fill_rect(canvas, width, height, progress, bar_background);
+        let fill_w = ((progress.w as f32 * model.stats.capacity.clamp(0.0, 100.0) / 100.0).round()
+            as i32)
+            .clamp(0, progress.w);
+        if fill_w > 0 {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: progress.x,
+                    y: progress.y,
+                    w: fill_w,
+                    h: progress.h,
+                },
+                fill,
+            );
+        }
+        y = y.saturating_add(cfg.progress_height).saturating_add(8);
+
+        let status_icon_w = 26;
+        if model.stats.charging() {
+            draw_battery_bolt(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x + 2,
+                    y: y + 10,
+                    w: 14,
+                    h: 24,
+                },
+                fill,
+            );
+        }
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x + status_icon_w,
+                y,
+                w: content_w - status_icon_w,
+                h: 26,
+            },
+            &model.stats.status,
+            &cfg.style,
+            0,
+            0,
+        )?;
+        let detail = model.status_detail_text();
+        if !detail.is_empty() {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x + status_icon_w,
+                    y: y + 24,
+                    w: content_w - status_icon_w,
+                    h: 24,
+                },
+                &detail,
+                &muted_style,
+                0,
+                0,
+            )?;
+        }
+        y = y.saturating_add(cfg.status_height);
+
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: 1,
+            },
+            separator,
+        );
+        y = y.saturating_add(1);
+
+        let rows = [
+            ("Time remaining", model.time_remaining_text()),
+            ("Battery health", model.health_text()),
+            ("Design capacity", model.design_capacity_text()),
+            ("Current rate", model.current_rate_text()),
+        ];
+        let value_w = 112;
+        for (label, value) in rows {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x,
+                    y,
+                    w: content_w - value_w - 8,
+                    h: cfg.row_height,
+                },
+                label,
+                &muted_style,
+                0,
+                0,
+            )?;
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x + content_w - value_w,
+                    y,
+                    w: value_w,
+                    h: cfg.row_height,
+                },
+                &value,
+                &cfg.style,
+                0,
+                0,
+            )?;
+            y = y.saturating_add(cfg.row_height);
+        }
+
+        Ok(())
+    }
+
     #[cfg(mhypr_module = "cpu")]
     pub fn draw_cpu_popup(
         &mut self,
@@ -1140,6 +1343,10 @@ impl Renderer {
             }
 
             match &view.visual {
+                #[cfg(mhypr_module = "battery")]
+                ModuleVisual::Battery(battery) => {
+                    self.draw_battery(canvas, width, height, rect, &view, battery)?;
+                }
                 #[cfg(mhypr_module = "cpu")]
                 ModuleVisual::Cpu(cpu) => {
                     self.draw_cpu(canvas, width, height, rect, &view, cpu)?;
@@ -1164,6 +1371,103 @@ impl Renderer {
             }
             x = x.saturating_add(module_width);
         }
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "battery")]
+    fn draw_battery(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        battery: &crate::modules::battery::BatteryVisual,
+    ) -> Result<()> {
+        let style = view.style;
+        let padding_x = style.padding_x.max(0);
+        let padding_y = style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+        let icon_h = battery.icon_height.min(content_h).max(5);
+        let body = Rect {
+            x: rect.x.saturating_add(padding_x),
+            y: rect
+                .y
+                .saturating_add(padding_y)
+                .saturating_add((content_h - icon_h) / 2),
+            w: battery.icon_width,
+            h: icon_h,
+        };
+        let color = battery_level_color(battery);
+
+        fill_rect(canvas, width, height, body, battery.icon_background);
+        let border = battery
+            .icon_border_width
+            .min((body.w.min(body.h) / 2).max(1));
+        let inner = Rect {
+            x: body.x.saturating_add(border),
+            y: body.y.saturating_add(border),
+            w: body.w.saturating_sub(border.saturating_mul(2)).max(0),
+            h: body.h.saturating_sub(border.saturating_mul(2)).max(0),
+        };
+        let fill_w = ((inner.w as f32 * battery.capacity.clamp(0.0, 100.0) / 100.0).round() as i32)
+            .clamp(0, inner.w);
+        if fill_w > 0 {
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    w: fill_w,
+                    h: inner.h,
+                },
+                color,
+            );
+        }
+        draw_rect_border(canvas, width, height, body, color, border);
+
+        let tip_h = (icon_h / 2).max(3);
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: body.x.saturating_add(body.w),
+                y: body.y.saturating_add((icon_h - tip_h) / 2),
+                w: battery.icon_tip_width,
+                h: tip_h,
+            },
+            color,
+        );
+
+        if battery.charging && inner.w >= 7 && inner.h >= 7 {
+            draw_battery_bolt(canvas, width, height, inner, [20, 24, 20, 255]);
+        }
+
+        let icon_total = battery.icon_width.saturating_add(battery.icon_tip_width);
+        let text_x = body
+            .x
+            .saturating_add(icon_total)
+            .saturating_add(battery.text_gap);
+        let right = rect.x.saturating_add(rect.w).saturating_sub(padding_x);
+        let text_w = right.saturating_sub(text_x).max(1);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: text_x,
+                y: rect.y,
+                w: text_w,
+                h: rect.h,
+            },
+            &format!("{:.0}%", battery.capacity),
+            style,
+            0,
+            padding_y,
+        )?;
         Ok(())
     }
 
@@ -1667,6 +1971,21 @@ fn module_width(view: &ModuleView<'_>) -> i32 {
         return width.max(0);
     }
 
+    #[cfg(mhypr_module = "battery")]
+    if let ModuleVisual::Battery(battery) = &view.visual {
+        let style = view.style;
+        let percent_width = estimate_text_width("100%", style);
+        let icon_width = battery
+            .icon_width
+            .saturating_add(battery.icon_tip_width)
+            .saturating_add(battery.text_gap);
+        let content = icon_width.saturating_add(percent_width);
+        return style
+            .min_width
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
+    }
+
     #[cfg(mhypr_module = "cpu")]
     if let ModuleVisual::Cpu(cpu) = &view.visual {
         let style = view.style;
@@ -1737,6 +2056,69 @@ fn estimate_text_width(text: &str, style: &ModuleStyle) -> i32 {
         .map(|ch| if ch.is_ascii() { 0.62_f32 } else { 1.0_f32 })
         .sum::<f32>();
     (em * style.font_size).ceil() as i32
+}
+
+#[cfg(mhypr_module = "battery")]
+fn battery_level_color(battery: &crate::modules::battery::BatteryVisual) -> [u8; 4] {
+    if battery.charging {
+        return battery.charging_color;
+    }
+    if battery.capacity >= battery.high_percent {
+        battery.high_color
+    } else if battery.capacity >= battery.medium_percent {
+        battery.medium_color
+    } else if battery.capacity >= battery.low_percent {
+        battery.low_color
+    } else {
+        battery.critical_color
+    }
+}
+
+#[cfg(mhypr_module = "battery")]
+fn draw_battery_bolt(canvas: &mut [u8], width: u32, height: u32, inner: Rect, color: [u8; 4]) {
+    let cx = inner.x + inner.w / 2;
+    let top = inner.y + 1;
+    let bottom = inner.y + inner.h - 1;
+    if bottom <= top {
+        return;
+    }
+
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: cx,
+            y: top,
+            w: 2,
+            h: ((inner.h - 2) / 2).max(2),
+        },
+        color,
+    );
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: cx - 2,
+            y: inner.y + inner.h / 2 - 1,
+            w: 5,
+            h: 2,
+        },
+        color,
+    );
+    fill_rect(
+        canvas,
+        width,
+        height,
+        Rect {
+            x: cx - 2,
+            y: inner.y + inner.h / 2,
+            w: 2,
+            h: (bottom - (inner.y + inner.h / 2)).max(2),
+        },
+        color,
+    );
 }
 
 #[cfg(mhypr_module = "cpu")]
@@ -1847,7 +2229,12 @@ fn blend_pixel_rgba(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, 
     blend_at(&mut canvas[offset..offset + 4], rgba);
 }
 
-#[cfg(any(mhypr_module = "cpu", mhypr_module = "disk", mhypr_module = "memory"))]
+#[cfg(any(
+    mhypr_module = "battery",
+    mhypr_module = "cpu",
+    mhypr_module = "disk",
+    mhypr_module = "memory"
+))]
 fn draw_rect_border(
     canvas: &mut [u8],
     width: u32,

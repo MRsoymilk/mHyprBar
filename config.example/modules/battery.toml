@@ -1,15 +1,53 @@
 # "auto" discovers the first /sys/class/power_supply/* device whose type is Battery.
-# On a desktop with no battery, the module stays empty without logging an error.
+# On a desktop with no battery, the module stays hidden.
 device = "auto"
-interval_ms = 10000
-low_percent = 20.0
+interval_ms = 5000
 empty_text = ""
+
+icon_width = 26
+icon_height = 14
+icon_tip_width = 3
+icon_border_width = 2
+text_gap = 6
+
+# Color thresholds match the compact battery mockup.
+high_percent = 60.0
+medium_percent = 30.0
+low_percent = 10.0
+high_color = "#56E36B"
+medium_color = "#FFD84A"
+low_color = "#FF8A25"
+critical_color = "#FF365A"
+charging_color = "#56E36B"
+icon_background = "#303030"
 
 [style]
 foreground = "#f2f2f2"
 background = "transparent"
 font_family = "sans-serif"
 font_size = 13.0
-padding_x = 8
-padding_y = 4
-min_width = 72
+padding_x = 6
+padding_y = 0
+min_width = 0
+
+[popup]
+enabled = true
+width = 380
+padding = 14
+title_height = 32
+progress_height = 14
+status_height = 54
+row_height = 30
+refresh_ms = 5000
+bar_background = "#25282D"
+border = "#3C414A"
+separator = "#353A42"
+
+[popup.style]
+foreground = "#F2F2F2"
+background = "#17191DEB"
+font_family = "sans-serif"
+font_size = 12.0
+padding_x = 0
+padding_y = 0
+min_width = 0

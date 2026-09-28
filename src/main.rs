@@ -1,3 +1,5 @@
+#[cfg(mhypr_module = "battery")]
+mod battery_popup;
 mod config;
 #[cfg(mhypr_module = "cpu")]
 mod cpu_popup;

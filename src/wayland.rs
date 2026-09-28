@@ -36,6 +36,8 @@ use wayland_client::{
     protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
 
+#[cfg(mhypr_module = "battery")]
+use crate::battery_popup::BatteryPopupModel;
 #[cfg(mhypr_module = "cpu")]
 use crate::cpu_popup::CpuPopupModel;
 #[cfg(mhypr_module = "disk")]
@@ -120,6 +122,8 @@ pub fn run(config: BarConfig) -> Result<()> {
         tray,
         tray_hover: None,
         tooltip: None,
+        #[cfg(mhypr_module = "battery")]
+        battery_popup: None,
         #[cfg(mhypr_module = "cpu")]
         cpu_popup: None,
         #[cfg(mhypr_module = "disk")]
@@ -260,6 +264,10 @@ pub fn run(config: BarConfig) -> Result<()> {
         if let Some(tooltip_timeout) = app.tray_hover_timeout() {
             timeout = timeout.min(tooltip_timeout);
         }
+        #[cfg(mhypr_module = "battery")]
+        if let Some(battery_timeout) = app.battery_popup_timeout() {
+            timeout = timeout.min(battery_timeout);
+        }
         #[cfg(mhypr_module = "cpu")]
         if let Some(cpu_timeout) = app.cpu_popup_timeout() {
             timeout = timeout.min(cpu_timeout);
@@ -279,6 +287,8 @@ pub fn run(config: BarConfig) -> Result<()> {
             app.draw_all();
         }
         app.maybe_show_tray_tooltip(&qh);
+        #[cfg(mhypr_module = "battery")]
+        app.refresh_battery_popup_if_due();
         #[cfg(mhypr_module = "cpu")]
         app.refresh_cpu_popup_if_due();
         #[cfg(mhypr_module = "disk")]
@@ -316,6 +326,18 @@ struct TooltipSurface {
     configured: bool,
     bar_index: usize,
     item_index: usize,
+}
+
+#[cfg(mhypr_module = "battery")]
+struct BatteryPopupSurface {
+    layer: LayerSurface,
+    model: BatteryPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
 }
 
 #[cfg(mhypr_module = "cpu")]
@@ -405,6 +427,8 @@ struct App {
     tray: Option<TrayState>,
     tray_hover: Option<TrayHover>,
     tooltip: Option<TooltipSurface>,
+    #[cfg(mhypr_module = "battery")]
+    battery_popup: Option<BatteryPopupSurface>,
     #[cfg(mhypr_module = "cpu")]
     cpu_popup: Option<CpuPopupSurface>,
     #[cfg(mhypr_module = "disk")]
@@ -472,6 +496,8 @@ impl App {
 
     fn remove_output(&mut self, output: &wl_output::WlOutput) {
         self.clear_tray_hover();
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
         #[cfg(mhypr_module = "cpu")]
         self.close_cpu_popup();
         #[cfg(mhypr_module = "disk")]
@@ -1020,6 +1046,153 @@ impl App {
         }
     }
 
+    #[cfg(mhypr_module = "battery")]
+    fn battery_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.battery_popup.as_ref()?;
+        Some(popup.next_refresh.saturating_duration_since(Instant::now()))
+    }
+
+    #[cfg(mhypr_module = "battery")]
+    fn refresh_battery_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let Some(popup) = self.battery_popup.as_mut() else {
+            return;
+        };
+        if now < popup.next_refresh {
+            return;
+        }
+        if let Err(error) = popup.model.refresh() {
+            eprintln!("mhyprbar: battery popup refresh failed: {error:#}");
+        }
+        popup.next_refresh = now + popup.model.config.refresh_interval();
+        self.draw_battery_popup();
+    }
+
+    #[cfg(mhypr_module = "battery")]
+    fn close_battery_popup(&mut self) {
+        self.battery_popup = None;
+    }
+
+    #[cfg(mhypr_module = "battery")]
+    fn toggle_battery_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.battery_popup.is_some() {
+            self.close_battery_popup();
+            return Ok(true);
+        }
+
+        let Some(model) = BatteryPopupModel::new()? else {
+            return Ok(false);
+        };
+        if !model.config.enabled {
+            return Ok(false);
+        }
+
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("battery popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x = (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-battery-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        let interval = model.config.refresh_interval();
+        self.battery_popup = Some(BatteryPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh: Instant::now() + interval,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "battery")]
+    fn draw_battery_popup(&mut self) {
+        let Some(popup) = self.battery_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let panel_x = popup.panel_x;
+        let panel_y = popup.panel_y;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create battery popup SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) =
+            self.renderer
+                .draw_battery_popup(canvas, width, height, &popup.model, panel_x, panel_y)
+        {
+            eprintln!("mhyprbar: battery popup render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach battery popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
     #[cfg(mhypr_module = "cpu")]
     fn cpu_popup_timeout(&self) -> Option<Duration> {
         let popup = self.cpu_popup.as_ref()?;
@@ -1082,6 +1255,8 @@ impl App {
         };
 
         self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
         #[cfg(mhypr_module = "disk")]
         self.close_disk_popup();
         #[cfg(mhypr_module = "memory")]
@@ -1263,6 +1438,8 @@ impl App {
         };
 
         self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
         #[cfg(mhypr_module = "cpu")]
         self.close_cpu_popup();
         #[cfg(mhypr_module = "memory")]
@@ -1405,6 +1582,8 @@ impl App {
         };
 
         self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
         #[cfg(mhypr_module = "cpu")]
         self.close_cpu_popup();
         #[cfg(mhypr_module = "disk")]
@@ -1491,6 +1670,8 @@ impl App {
         let mut modules = ModuleManager::load()?;
         modules.refresh_due();
         self.clear_tray_hover();
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
         #[cfg(mhypr_module = "cpu")]
         self.close_cpu_popup();
         #[cfg(mhypr_module = "disk")]
@@ -1819,6 +2000,18 @@ impl App {
         };
         let name = hit.name.to_owned();
 
+        #[cfg(mhypr_module = "battery")]
+        if name == "battery" {
+            match self.toggle_battery_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: battery popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
         #[cfg(mhypr_module = "cpu")]
         if name == "cpu" {
             match self.toggle_cpu_popup(_qh, bar_index, x) {
@@ -1920,6 +2113,15 @@ impl LayerShellHandler for App {
             self.tooltip = None;
             return;
         }
+        #[cfg(mhypr_module = "battery")]
+        if self
+            .battery_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.battery_popup = None;
+            return;
+        }
         #[cfg(mhypr_module = "cpu")]
         if self
             .cpu_popup
@@ -1984,6 +2186,20 @@ impl LayerShellHandler for App {
                 tooltip.configured = true;
             }
             self.draw_tooltip();
+            return;
+        }
+        #[cfg(mhypr_module = "battery")]
+        if self
+            .battery_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.battery_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_battery_popup();
             return;
         }
         #[cfg(mhypr_module = "cpu")]
@@ -2108,6 +2324,34 @@ impl PointerHandler for App {
         events: &[PointerEvent],
     ) {
         for event in events {
+            #[cfg(mhypr_module = "battery")]
+            if self
+                .battery_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                match event.kind {
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let inside = self.battery_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside {
+                            self.close_battery_popup();
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_battery_popup();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             #[cfg(mhypr_module = "cpu")]
             if self
                 .cpu_popup
