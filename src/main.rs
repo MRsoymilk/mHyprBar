@@ -18,6 +18,8 @@ mod memory_popup;
 mod modules;
 #[cfg(mhypr_module = "monitor")]
 mod monitor_popup;
+#[cfg(mhypr_module = "network")]
+mod network_popup;
 mod render;
 mod tray;
 #[cfg(mhypr_module = "tray")]

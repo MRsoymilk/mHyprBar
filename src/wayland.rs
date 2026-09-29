@@ -49,7 +49,9 @@ use crate::gpu_popup::{GpuPopupConfig, GpuPopupModel};
 #[cfg(mhypr_module = "memory")]
 use crate::memory_popup::MemoryPopupModel;
 #[cfg(mhypr_module = "monitor")]
-use crate::monitor_popup::MonitorPopupModel;
+use crate::monitor_popup::{MonitorPopupModel, context_action};
+#[cfg(mhypr_module = "network")]
+use crate::network_popup::NetworkPopupModel;
 use crate::{
     config::{BarConfig, ModuleStyle},
     hyprland::{self, MonitorState, Snapshot},
@@ -142,6 +144,10 @@ pub fn run(config: BarConfig) -> Result<()> {
         memory_popup: None,
         #[cfg(mhypr_module = "monitor")]
         monitor_popup: None,
+        #[cfg(mhypr_module = "monitor")]
+        monitor_context: None,
+        #[cfg(mhypr_module = "network")]
+        network_popup: None,
         #[cfg(mhypr_module = "tray")]
         tray_popup: None,
         exit: false,
@@ -411,12 +417,37 @@ struct GpuPopupSurface {
 struct MonitorPopupSurface {
     layer: LayerSurface,
     model: MonitorPopupModel,
+    output: wl_output::WlOutput,
     width: u32,
     height: u32,
     configured: bool,
     panel_x: f64,
     panel_y: f64,
     next_refresh: Instant,
+}
+
+#[cfg(mhypr_module = "monitor")]
+struct MonitorContextSurface {
+    layer: LayerSurface,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    panel_width: i32,
+    row_height: i32,
+    hovered_action: Option<usize>,
+}
+
+#[cfg(mhypr_module = "network")]
+struct NetworkPopupSurface {
+    layer: LayerSurface,
+    model: NetworkPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
 }
 
 #[cfg(mhypr_module = "disk")]
@@ -508,6 +539,10 @@ struct App {
     memory_popup: Option<MemoryPopupSurface>,
     #[cfg(mhypr_module = "monitor")]
     monitor_popup: Option<MonitorPopupSurface>,
+    #[cfg(mhypr_module = "monitor")]
+    monitor_context: Option<MonitorContextSurface>,
+    #[cfg(mhypr_module = "network")]
+    network_popup: Option<NetworkPopupSurface>,
     #[cfg(mhypr_module = "tray")]
     tray_popup: Option<TrayPopupSurface>,
     exit: bool,
@@ -1953,6 +1988,7 @@ impl App {
 
     #[cfg(mhypr_module = "monitor")]
     fn close_monitor_popup(&mut self) {
+        self.monitor_context = None;
         self.monitor_popup = None;
     }
 
@@ -2028,6 +2064,7 @@ impl App {
         self.monitor_popup = Some(MonitorPopupSurface {
             layer,
             model,
+            output,
             width: 1,
             height: 1,
             configured: false,
@@ -2079,6 +2116,230 @@ impl App {
         surface.damage_buffer(0, 0, width as i32, height as i32);
         if let Err(error) = buffer.attach_to(&surface) {
             eprintln!("mhyprbar: failed to attach monitor popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    fn open_monitor_context(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Result<()> {
+        let Some(popup) = self.monitor_popup.as_ref() else {
+            return Ok(());
+        };
+        let output = popup.output.clone();
+        let output_w = popup.width.max(1) as f64;
+        let output_h = popup.height.max(1) as f64;
+        let panel_width = 360;
+        let row_height = 30;
+        let panel_height = row_height * 9;
+        let panel_x = (cursor_x + 8.0).clamp(0.0, (output_w - panel_width as f64).max(0.0));
+        let panel_y = (cursor_y + 8.0).clamp(0.0, (output_h - panel_height as f64).max(0.0));
+
+        self.monitor_context = None;
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-monitor-context"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+        self.monitor_context = Some(MonitorContextSurface {
+            layer,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            panel_width,
+            row_height,
+            hovered_action: None,
+        });
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    fn draw_monitor_context(&mut self) {
+        let Some(context) = self.monitor_context.as_ref() else {
+            return;
+        };
+        let Some(popup) = self.monitor_popup.as_ref() else {
+            return;
+        };
+        if !context.configured || context.width == 0 || context.height == 0 {
+            return;
+        }
+        let surface = context.layer.wl_surface().clone();
+        let layer = context.layer.clone();
+        let width = context.width;
+        let height = context.height;
+        let stride = width as i32 * 4;
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create monitor context SHM buffer: {error}");
+                return;
+            }
+        };
+        if let Err(error) = self.renderer.draw_monitor_context(
+            canvas,
+            width,
+            height,
+            &popup.model,
+            context.panel_x,
+            context.panel_y,
+            context.panel_width,
+            context.row_height,
+            context.hovered_action,
+        ) {
+            eprintln!("mhyprbar: monitor context render failed: {error:#}");
+            return;
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach monitor context SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "network")]
+    fn close_network_popup(&mut self) {
+        self.network_popup = None;
+    }
+
+    #[cfg(mhypr_module = "network")]
+    fn toggle_network_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.network_popup.is_some() {
+            self.close_network_popup();
+            return Ok(true);
+        }
+
+        let model = NetworkPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("network popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x =
+            (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "monitor")]
+        self.close_monitor_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-network-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        self.network_popup = Some(NetworkPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "network")]
+    fn draw_network_popup(&mut self) {
+        let Some(popup) = self.network_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create network popup SHM buffer: {error}");
+                return;
+            }
+        };
+        if let Err(error) = self.renderer.draw_network_popup(
+            canvas,
+            width,
+            height,
+            &popup.model,
+            popup.panel_x,
+            popup.panel_y,
+        ) {
+            eprintln!("mhyprbar: network popup render failed: {error:#}");
+            return;
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach network popup SHM buffer: {error}");
             return;
         }
         layer.commit();
@@ -2795,6 +3056,18 @@ impl App {
             }
         }
 
+        #[cfg(mhypr_module = "network")]
+        if name == "network" {
+            match self.toggle_network_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: network popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
         #[cfg(mhypr_module = "disk")]
         if name == "disk" {
             match self.toggle_disk_popup(_qh, bar_index, x) {
@@ -2954,11 +3227,30 @@ impl LayerShellHandler for App {
         }
         #[cfg(mhypr_module = "monitor")]
         if self
+            .monitor_context
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.monitor_context = None;
+            return;
+        }
+        #[cfg(mhypr_module = "monitor")]
+        if self
             .monitor_popup
             .as_ref()
             .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
         {
+            self.monitor_context = None;
             self.monitor_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "network")]
+        if self
+            .network_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.network_popup = None;
             return;
         }
         #[cfg(mhypr_module = "disk")]
@@ -3076,6 +3368,20 @@ impl LayerShellHandler for App {
         }
         #[cfg(mhypr_module = "monitor")]
         if self
+            .monitor_context
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.monitor_context.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_monitor_context();
+            return;
+        }
+        #[cfg(mhypr_module = "monitor")]
+        if self
             .monitor_popup
             .as_ref()
             .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
@@ -3086,6 +3392,20 @@ impl LayerShellHandler for App {
                 popup.configured = true;
             }
             self.draw_monitor_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "network")]
+        if self
+            .network_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.network_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_network_popup();
             return;
         }
         #[cfg(mhypr_module = "disk")]
@@ -3371,6 +3691,79 @@ impl PointerHandler for App {
 
             #[cfg(mhypr_module = "monitor")]
             if self
+                .monitor_context
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                let mut redraw_context = false;
+                match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        if let Some(context) = self.monitor_context.as_mut() {
+                            let inside_x = event.position.0 >= context.panel_x
+                                && event.position.0
+                                    < context.panel_x + context.panel_width as f64;
+                            let inside_y = event.position.1 >= context.panel_y
+                                && event.position.1
+                                    < context.panel_y + (context.row_height * 9) as f64;
+                            let next = if inside_x && inside_y {
+                                Some(
+                                    ((event.position.1 - context.panel_y)
+                                        / context.row_height as f64)
+                                        .floor() as usize,
+                                )
+                            } else {
+                                None
+                            };
+                            if context.hovered_action != next {
+                                context.hovered_action = next;
+                                redraw_context = true;
+                            }
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let action = self.monitor_context.as_ref().and_then(|context| {
+                            let inside_x = event.position.0 >= context.panel_x
+                                && event.position.0
+                                    < context.panel_x + context.panel_width as f64;
+                            let inside_y = event.position.1 >= context.panel_y
+                                && event.position.1
+                                    < context.panel_y + (context.row_height * 9) as f64;
+                            if !(inside_x && inside_y) {
+                                return None;
+                            }
+                            let index = ((event.position.1 - context.panel_y)
+                                / context.row_height as f64)
+                                .floor() as usize;
+                            context_action(index)
+                        });
+                        if let Some(action) = action {
+                            if let Some(popup) = self.monitor_popup.as_mut()
+                                && let Err(error) = popup.model.apply_action(action)
+                            {
+                                eprintln!("mhyprbar: monitor context action failed: {error:#}");
+                            }
+                            if self.modules.force_refresh("monitor") {
+                                self.draw_all();
+                            }
+                            self.monitor_context = None;
+                            self.draw_monitor_popup();
+                        } else {
+                            self.monitor_context = None;
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.monitor_context = None;
+                    }
+                    _ => {}
+                }
+                if redraw_context {
+                    self.draw_monitor_context();
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "monitor")]
+            if self
                 .monitor_popup
                 .as_ref()
                 .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
@@ -3429,12 +3822,57 @@ impl PointerHandler for App {
                         }
                     }
                     PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
-                        self.close_monitor_popup();
+                        let handled = if let Some(popup) = self.monitor_popup.as_mut() {
+                            let inside_x = event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64;
+                            let local_y = event.position.1 - popup.panel_y;
+                            inside_x && popup.model.open_context_at(local_y)
+                        } else {
+                            false
+                        };
+                        if handled {
+                            if let Err(error) =
+                                self.open_monitor_context(qh, event.position.0, event.position.1)
+                            {
+                                eprintln!("mhyprbar: failed to open monitor context: {error:#}");
+                            }
+                            redraw = true;
+                        } else {
+                            self.close_monitor_popup();
+                        }
                     }
                     _ => {}
                 }
                 if redraw {
                     self.draw_monitor_popup();
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "network")]
+            if self
+                .network_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                match event.kind {
+                    PointerEventKind::Press { button, .. }
+                        if button == BTN_LEFT || button == BTN_RIGHT =>
+                    {
+                        let inside = self.network_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside || button == BTN_RIGHT {
+                            self.close_network_popup();
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }

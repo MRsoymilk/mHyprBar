@@ -726,6 +726,7 @@ impl Renderer {
         let border = cfg.border_rgba()?;
         let separator = cfg.separator_rgba()?;
         let selected_background = cfg.selected_background_rgba()?;
+        let hover_background = cfg.hover_background_rgba()?;
 
         fill_rect(canvas, width, height, panel, background);
         draw_rect_border(canvas, width, height, panel, border, 1);
@@ -796,8 +797,10 @@ impl Renderer {
                     w: content_w,
                     h: cfg.row_height,
                 };
-                if index == model.selected || model.hovered_row == Some(index) {
+                if index == model.selected {
                     fill_rect(canvas, width, height, row, selected_background);
+                } else if model.hovered_row == Some(index) {
+                    fill_rect(canvas, width, height, row, hover_background);
                 }
 
                 let primary = crate::monitor_popup::MonitorPopupModel::primary_text(monitor);
@@ -837,59 +840,223 @@ impl Renderer {
             }
         }
 
-        fill_rect(
-            canvas,
-            width,
-            height,
-            Rect {
-                x: content_x,
-                y,
-                w: content_w,
-                h: 1,
-            },
-            separator,
-        );
-        y += 1;
+        let _ = y;
 
-        for (labels, columns) in [
-            (["Focus", "Scale -", "Scale +", ""], 3_i32),
-            (["Left", "Up", "Down", "Right"], 4_i32),
-            (["Mode -", "Mode +", "", ""], 2_i32),
-        ] {
-            let cell_w = (content_w / columns).max(1);
-            for column in 0..columns {
-                let rect = Rect {
-                    x: content_x + column * cell_w,
-                    y,
-                    w: if column + 1 == columns {
-                        content_w - column * cell_w
-                    } else {
-                        cell_w
-                    },
-                    h: cfg.control_height,
-                };
-                draw_rect_border(canvas, width, height, rect, separator, 1);
-                let label = labels[column as usize];
-                let text_w = estimate_text_width(label, &cfg.style).min(rect.w).max(1);
-                self.draw_text_content(
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    pub fn draw_monitor_context(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::monitor_popup::MonitorPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+        panel_width: i32,
+        row_height: i32,
+        hovered_action: Option<usize>,
+    ) -> Result<()> {
+        canvas.fill(0);
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: panel_width,
+            h: row_height.saturating_mul(9),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let hover_background = cfg.hover_background_rgba()?;
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let actions = [
+            ("Focus", "Focus this display"),
+            ("Scale -", "Decrease scale by 0.25"),
+            ("Scale +", "Increase scale by 0.25"),
+            ("Left", "Place automatically to the left"),
+            ("Up", "Place automatically above"),
+            ("Down", "Place automatically below"),
+            ("Right", "Place automatically to the right"),
+            ("Mode -", "Switch to previous display mode"),
+            ("Mode +", "Switch to next display mode"),
+        ];
+        let mut detail_style = cfg.style.clone();
+        detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
+        for (index, (label, description)) in actions.iter().enumerate() {
+            let row = Rect {
+                x: panel.x,
+                y: panel.y + index as i32 * row_height,
+                w: panel.w,
+                h: row_height,
+            };
+            if hovered_action == Some(index) {
+                fill_rect(canvas, width, height, row, hover_background);
+            }
+            if index > 0 {
+                fill_rect(
                     canvas,
                     width,
                     height,
                     Rect {
-                        x: rect.x + (rect.w - text_w).max(0) / 2,
-                        y: rect.y,
-                        w: text_w,
-                        h: rect.h,
+                        x: row.x,
+                        y: row.y,
+                        w: row.w,
+                        h: 1,
                     },
-                    label,
-                    &cfg.style,
-                    0,
-                    0,
-                )?;
+                    separator,
+                );
             }
-            y += cfg.control_height;
+            let label_w = 88;
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: row.x + 10,
+                    y: row.y,
+                    w: label_w,
+                    h: row.h,
+                },
+                label,
+                &cfg.style,
+                0,
+                0,
+            )?;
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: row.x + label_w,
+                    y: row.y,
+                    w: (row.w - label_w - 10).max(1),
+                    h: row.h,
+                },
+                description,
+                &detail_style,
+                0,
+                0,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "network")]
+    pub fn draw_network_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::network_popup::NetworkPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let active_background = cfg.active_background_rgba()?;
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let pad = cfg.padding;
+        let content_x = panel.x + pad;
+        let content_w = (panel.w - pad * 2).max(1);
+        let mut y = panel.y + pad;
+
+        let mut title_style = cfg.style.clone();
+        title_style.font_size = (cfg.style.font_size + 1.0).max(cfg.style.font_size);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect { x: content_x, y, w: content_w, h: cfg.title_height },
+            &format!("Network interfaces · {}", model.interfaces.len()),
+            &title_style,
+            0,
+            0,
+        )?;
+        y += cfg.title_height;
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect { x: content_x, y, w: content_w, h: 1 },
+            separator,
+        );
+        y += 1;
+
+        if model.interfaces.is_empty() {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect { x: content_x, y, w: content_w, h: cfg.row_height },
+                "No network interfaces",
+                &cfg.style,
+                0,
+                0,
+            )?;
+            return Ok(());
         }
 
+        let mut detail_style = cfg.style.clone();
+        detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
+        for interface in &model.interfaces {
+            let row = Rect { x: content_x, y, w: content_w, h: cfg.row_height };
+            if interface.is_default {
+                fill_rect(canvas, width, height, row, active_background);
+            }
+            let top_h = (cfg.row_height / 2).max(1);
+            let title = if interface.is_default {
+                format!("{} · default · {}", interface.name, interface.state)
+            } else {
+                format!("{} · {}", interface.name, interface.state)
+            };
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect { x: row.x + 8, y: row.y, w: row.w - 16, h: top_h },
+                &title,
+                &cfg.style,
+                0,
+                0,
+            )?;
+            let detail = format!(
+                "{}   speed {}   mtu {}   mac {}",
+                interface.addresses, interface.speed, interface.mtu, interface.mac
+            );
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect { x: row.x + 8, y: row.y + top_h, w: row.w - 16, h: row.h - top_h },
+                &detail,
+                &detail_style,
+                0,
+                0,
+            )?;
+            y += cfg.row_height;
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect { x: content_x, y: y - 1, w: content_w, h: 1 },
+                separator,
+            );
+        }
         Ok(())
     }
 
@@ -2218,6 +2385,10 @@ impl Renderer {
                 ModuleVisual::Memory(memory) => {
                     self.draw_memory(canvas, width, height, rect, &view, memory)?;
                 }
+                #[cfg(mhypr_module = "network")]
+                ModuleVisual::Network(network) => {
+                    self.draw_network(canvas, width, height, rect, &view, network)?;
+                }
                 ModuleVisual::Text => {
                     if name == "tray" {
                         if let Some(tray) = tray {
@@ -2230,6 +2401,47 @@ impl Renderer {
             }
             x = x.saturating_add(module_width);
         }
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "network")]
+    fn draw_network(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        network: &crate::modules::network::NetworkVisual,
+    ) -> Result<()> {
+        let padding_x = view.style.padding_x.max(0);
+        let padding_y = view.style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(2);
+        let row_h = (content_h / 2).max(1);
+        let mut row_style = view.style.clone();
+        row_style.font_size = (view.style.font_size - 1.0).max(8.0);
+        let x = rect.x.saturating_add(padding_x);
+        let w = rect.w.saturating_sub(padding_x.saturating_mul(2)).max(1);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect { x, y: rect.y + padding_y, w, h: row_h },
+            &network.download_text,
+            &row_style,
+            0,
+            0,
+        )?;
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect { x, y: rect.y + padding_y + row_h, w, h: content_h - row_h },
+            &network.upload_text,
+            &row_style,
+            0,
+            0,
+        )?;
         Ok(())
     }
 
@@ -3641,6 +3853,19 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
         let content = icon_slot
             .saturating_add(disk.icon_gap)
             .saturating_add(disk.bar_width);
+        return style
+            .min_width
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
+    }
+
+    #[cfg(mhypr_module = "network")]
+    if let ModuleVisual::Network(network) = &view.visual {
+        let style = view.style;
+        let mut row_style = style.clone();
+        row_style.font_size = (style.font_size - 1.0).max(8.0);
+        let content = estimate_text_width(&network.download_text, &row_style)
+            .max(estimate_text_width(&network.upload_text, &row_style));
         return style
             .min_width
             .max(content.saturating_add(style.padding_x.saturating_mul(2)))
