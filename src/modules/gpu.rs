@@ -40,8 +40,15 @@ struct GpuConfig {
 
 #[derive(Clone)]
 pub struct GpuVisual {
+    pub backend_name: String,
+    pub vendor: String,
+    pub name: String,
     pub utilization_percent: Option<f32>,
     pub memory_percent: Option<f32>,
+    pub memory_used_bytes: Option<u64>,
+    pub memory_total_bytes: Option<u64>,
+    pub temperature_c: Option<f32>,
+    pub power_w: Option<f32>,
     pub bar_width: i32,
     pub bar_height: i32,
     pub row_gap: i32,
@@ -65,6 +72,7 @@ impl GpuModule {
     pub fn load() -> Result<Self> {
         let config: GpuConfig = config::load_module(NAME)?;
         validate_config(&config)?;
+        let _ = crate::gpu_popup::GpuPopupConfig::load()?;
 
         let mut backend = create_backend(&config.backend, &config.device)?;
         let stats = backend.sample()?;
@@ -120,8 +128,15 @@ impl StatusModule for GpuModule {
 
     fn visual(&self) -> ModuleVisual {
         ModuleVisual::Gpu(GpuVisual {
+            backend_name: self.backend.backend_name().to_owned(),
+            vendor: self.stats.vendor.label().to_owned(),
+            name: self.stats.name.clone(),
             utilization_percent: self.stats.utilization_percent,
             memory_percent: self.stats.memory_percent(),
+            memory_used_bytes: self.stats.memory_used_bytes,
+            memory_total_bytes: self.stats.memory_total_bytes,
+            temperature_c: self.stats.temperature_c,
+            power_w: self.stats.power_w,
             bar_width: self.config.bar_width,
             bar_height: self.config.bar_height,
             row_gap: self.config.row_gap,

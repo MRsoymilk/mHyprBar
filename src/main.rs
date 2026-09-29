@@ -9,6 +9,8 @@ mod cpu_popup;
 mod disk_popup;
 #[cfg(mhypr_module = "gpu")]
 mod gpu;
+#[cfg(mhypr_module = "gpu")]
+mod gpu_popup;
 mod hyprland;
 mod ipc;
 #[cfg(mhypr_module = "memory")]

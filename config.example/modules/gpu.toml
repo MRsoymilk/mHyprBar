@@ -27,3 +27,26 @@ font_size = 9.0
 padding_x = 5
 padding_y = 1
 min_width = 0
+
+[popup]
+enabled = true
+width = 400
+padding = 12
+title_height = 34
+row_height = 30
+refresh_ms = 1000
+bar_width = 140
+bar_background = "#303030"
+utilization_fill = "#76B900"
+memory_fill = "#4EA1FF"
+border = "#3C414A"
+separator = "#353A42"
+
+[popup.style]
+foreground = "#F2F2F2"
+background = "#17191DEB"
+font_family = "sans-serif"
+font_size = 12.0
+padding_x = 0
+padding_y = 0
+min_width = 0

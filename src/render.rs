@@ -703,6 +703,182 @@ impl Renderer {
         Ok(())
     }
 
+    #[cfg(mhypr_module = "gpu")]
+    pub fn draw_gpu_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::gpu_popup::GpuPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let bar_bg = cfg.bar_background_rgba()?;
+        let utilization_fill = cfg.utilization_fill_rgba()?;
+        let memory_fill = cfg.memory_fill_rgba()?;
+
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let pad = cfg.padding;
+        let mut title_style = cfg.style.clone();
+        title_style.font_size = (cfg.style.font_size + 1.0).max(cfg.style.font_size);
+        let title_rect = Rect {
+            x: panel.x + pad,
+            y: panel.y + pad,
+            w: (panel.w - pad * 2).max(1),
+            h: cfg.title_height,
+        };
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            title_rect,
+            &model.snapshot.name,
+            &title_style,
+            0,
+            0,
+        )?;
+
+        let mut y = title_rect.y.saturating_add(cfg.title_height);
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: panel.x + pad,
+                y,
+                w: (panel.w - pad * 2).max(0),
+                h: 1,
+            },
+            separator,
+        );
+        y = y.saturating_add(1);
+
+        let rows = [
+            ("Backend", model.backend_text(), None),
+            (
+                "GPU Load",
+                model.utilization_text(),
+                model
+                    .snapshot
+                    .utilization_percent
+                    .map(|value| (value, utilization_fill)),
+            ),
+            (
+                "VRAM",
+                model.memory_text(),
+                model
+                    .snapshot
+                    .memory_percent
+                    .map(|value| (value, memory_fill)),
+            ),
+            ("Temperature", model.temperature_text(), None),
+            ("Power", model.power_text(), None),
+        ];
+
+        let label_w = 92;
+        let value_w = 154;
+        for (label, value, bar) in rows {
+            let row = Rect {
+                x: panel.x + pad,
+                y,
+                w: (panel.w - pad * 2).max(1),
+                h: cfg.row_height,
+            };
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: row.x,
+                    y: row.y,
+                    w: label_w.min(row.w).max(1),
+                    h: row.h,
+                },
+                label,
+                &cfg.style,
+                0,
+                0,
+            )?;
+
+            if let Some((percent, fill)) = bar {
+                let bar_w = cfg
+                    .bar_width
+                    .min(row.w.saturating_sub(label_w + value_w + 12))
+                    .max(1);
+                let bar_h = (row.h - 14).clamp(4, 10);
+                let bar_rect = Rect {
+                    x: row.x + label_w,
+                    y: row.y + (row.h - bar_h) / 2,
+                    w: bar_w,
+                    h: bar_h,
+                };
+                fill_rect(canvas, width, height, bar_rect, bar_bg);
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: bar_rect.x,
+                        y: bar_rect.y,
+                        w: ((bar_rect.w as f32 * percent.clamp(0.0, 100.0) / 100.0).round() as i32)
+                            .clamp(0, bar_rect.w),
+                        h: bar_rect.h,
+                    },
+                    fill,
+                );
+                self.draw_text_content(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: bar_rect.x + bar_rect.w + 8,
+                        y: row.y,
+                        w: (row.x + row.w - (bar_rect.x + bar_rect.w + 8)).max(1),
+                        h: row.h,
+                    },
+                    &value,
+                    &cfg.style,
+                    0,
+                    0,
+                )?;
+            } else {
+                self.draw_text_content(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: row.x + label_w,
+                        y: row.y,
+                        w: (row.w - label_w).max(1),
+                        h: row.h,
+                    },
+                    &value,
+                    &cfg.style,
+                    0,
+                    0,
+                )?;
+            }
+
+            y = y.saturating_add(cfg.row_height);
+        }
+
+        Ok(())
+    }
+
     #[cfg(mhypr_module = "cpu")]
     pub fn draw_cpu_popup(
         &mut self,
