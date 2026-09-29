@@ -1934,115 +1934,43 @@ impl Renderer {
         let padding_x = view.style.padding_x.max(0);
         let padding_y = view.style.padding_y.max(0);
         let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
-        let icon_h = layout.icon_height.min(content_h).max(5);
-        let icon = Rect {
-            x: rect.x.saturating_add(padding_x),
-            y: rect
-                .y
-                .saturating_add(padding_y)
-                .saturating_add((content_h - icon_h) / 2),
-            w: layout.icon_width,
-            h: icon_h,
-        };
+        let icon_size = layout_icon_slot_size(layout, view.style, rect.h);
+        let icon_x = rect.x.saturating_add(padding_x);
+        let icon_y = rect
+            .y
+            .saturating_add(padding_y)
+            .saturating_add((content_h - icon_size) / 2);
         let color = view.style.foreground_rgba()?;
-        draw_rect_border(canvas, width, height, icon, color, 1);
 
-        let name = layout.name.to_ascii_lowercase();
-        if name.contains("master") {
-            let split_x = icon.x + (icon.w * 3 / 5);
-            fill_rect(
+        if let Some(pixels) = layout.icon_pixels.as_ref() {
+            draw_tinted_rgba_mask(
                 canvas,
                 width,
                 height,
-                Rect {
-                    x: split_x,
-                    y: icon.y + 1,
-                    w: 1,
-                    h: (icon.h - 2).max(1),
-                },
+                icon_x,
+                icon_y,
+                icon_size,
+                layout.icon_width,
+                layout.icon_height,
+                pixels,
                 color,
-            );
-            fill_rect(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: split_x + 1,
-                    y: icon.y + icon.h / 2,
-                    w: (icon.x + icon.w - split_x - 2).max(1),
-                    h: 1,
-                },
-                color,
-            );
-        } else if name.contains("scroll") {
-            for numerator in [1, 2] {
-                let split_x = icon.x + icon.w * numerator / 3;
-                fill_rect(
-                    canvas,
-                    width,
-                    height,
-                    Rect {
-                        x: split_x,
-                        y: icon.y + 1,
-                        w: 1,
-                        h: (icon.h - 2).max(1),
-                    },
-                    color,
-                );
-            }
-        } else if name.contains("monocle") {
-            draw_rect_border(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: icon.x + 3,
-                    y: icon.y + 3,
-                    w: (icon.w - 6).max(1),
-                    h: (icon.h - 6).max(1),
-                },
-                color,
-                1,
             );
         } else {
-            let split_x = icon.x + icon.w / 2;
-            let split_y = icon.y + icon.h / 2;
-            fill_rect(
+            self.draw_text_content(
                 canvas,
                 width,
                 height,
                 Rect {
-                    x: split_x,
-                    y: icon.y + 1,
-                    w: 1,
-                    h: (icon.h - 2).max(1),
+                    x: rect.x.saturating_add(padding_x),
+                    y: rect.y,
+                    w: rect.w.saturating_sub(padding_x.saturating_mul(2)).max(1),
+                    h: rect.h,
                 },
-                color,
-            );
-            fill_rect(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: split_x + 1,
-                    y: split_y,
-                    w: (icon.x + icon.w - split_x - 2).max(1),
-                    h: 1,
-                },
-                color,
-            );
-            fill_rect(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: split_x + (icon.w - icon.w / 2) / 2,
-                    y: split_y + 1,
-                    w: 1,
-                    h: (icon.y + icon.h - split_y - 2).max(1),
-                },
-                color,
-            );
+                &layout.name,
+                view.style,
+                0,
+                padding_y,
+            )?;
         }
 
         Ok(())
@@ -2776,6 +2704,18 @@ fn brightness_icon_slot_size(
     ((available as f32 * brightness.icon_scale).round() as i32).clamp(1, available)
 }
 
+#[cfg(mhypr_module = "layout")]
+fn layout_icon_slot_size(
+    layout: &crate::modules::layout::LayoutVisual,
+    style: &ModuleStyle,
+    bar_height: i32,
+) -> i32 {
+    let available = bar_height
+        .saturating_sub(style.padding_y.max(0).saturating_mul(2))
+        .max(1);
+    ((available as f32 * layout.icon_scale).round() as i32).clamp(1, available)
+}
+
 fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     if let Some(width) = view.width_override {
         return width.max(0);
@@ -2848,13 +2788,14 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     #[cfg(mhypr_module = "layout")]
     if let ModuleVisual::Layout(layout) = &view.visual {
         let style = view.style;
+        let content = if layout.icon_pixels.is_some() {
+            layout_icon_slot_size(layout, style, bar_height)
+        } else {
+            estimate_text_width(&layout.name, style)
+        };
         return style
             .min_width
-            .max(
-                layout
-                    .icon_width
-                    .saturating_add(style.padding_x.saturating_mul(2)),
-            )
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
             .max(1);
     }
 
@@ -3022,7 +2963,11 @@ fn lerp_rgba(from: [u8; 4], to: [u8; 4], t: f32) -> [u8; 4] {
     ]
 }
 
-#[cfg(any(mhypr_module = "audio", mhypr_module = "brightness"))]
+#[cfg(any(
+    mhypr_module = "audio",
+    mhypr_module = "brightness",
+    mhypr_module = "layout"
+))]
 #[allow(clippy::too_many_arguments)]
 fn draw_tinted_rgba_mask(
     canvas: &mut [u8],

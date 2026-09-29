@@ -47,10 +47,10 @@ use crate::disk_popup::DiskPopupModel;
 #[cfg(mhypr_module = "memory")]
 use crate::memory_popup::MemoryPopupModel;
 use crate::{
-    config::BarConfig,
+    config::{BarConfig, ModuleStyle},
     hyprland::{self, MonitorState, Snapshot},
     ipc::{self, Request},
-    modules::ModuleManager,
+    modules::{ModuleManager, ModuleVisual},
     render::{self, Renderer},
     tray::TrayState,
 };
@@ -331,11 +331,12 @@ struct TrayHover {
 struct TooltipSurface {
     layer: LayerSurface,
     text: String,
+    style: ModuleStyle,
     width: u32,
     height: u32,
     configured: bool,
     bar_index: usize,
-    item_index: usize,
+    item_index: Option<usize>,
 }
 
 #[cfg(mhypr_module = "battery")]
@@ -548,7 +549,7 @@ impl App {
     fn tray_hover_timeout(&self) -> Option<Duration> {
         let hover = self.tray_hover.as_ref()?;
         if self.tooltip.as_ref().is_some_and(|tooltip| {
-            tooltip.bar_index == hover.bar_index && tooltip.item_index == hover.item_index
+            tooltip.bar_index == hover.bar_index && tooltip.item_index == Some(hover.item_index)
         }) {
             return None;
         }
@@ -632,7 +633,120 @@ impl App {
 
     fn clear_tray_hover(&mut self) {
         self.tray_hover = None;
+        if self
+            .tooltip
+            .as_ref()
+            .is_some_and(|tooltip| tooltip.item_index.is_some())
+        {
+            self.tooltip = None;
+        }
+    }
+
+    #[cfg(mhypr_module = "layout")]
+    fn clear_layout_tooltip(&mut self) {
+        if self
+            .tooltip
+            .as_ref()
+            .is_some_and(|tooltip| tooltip.item_index.is_none())
+        {
+            self.tooltip = None;
+        }
+    }
+
+    #[cfg(mhypr_module = "layout")]
+    fn update_layout_tooltip(&mut self, qh: &QueueHandle<Self>, bar_index: usize, x: f64) {
+        let Some(bar) = self.bars.get(bar_index) else {
+            self.clear_layout_tooltip();
+            return;
+        };
+        let bar_width = bar.width;
+        let bar_height = bar.height as i32;
+        let output = bar.output.clone();
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar_width, workspace_visible, &self.config, &self.modules)
+        else {
+            self.clear_layout_tooltip();
+            return;
+        };
+        if hit.name != "layout" {
+            self.clear_layout_tooltip();
+            return;
+        }
+
+        let Some(view) = self.modules.view("layout") else {
+            self.clear_layout_tooltip();
+            return;
+        };
+        let ModuleVisual::Layout(layout) = view.visual else {
+            self.clear_layout_tooltip();
+            return;
+        };
+        let text = layout.tooltip;
+        if self.tooltip.as_ref().is_some_and(|tooltip| {
+            tooltip.bar_index == bar_index && tooltip.item_index.is_none() && tooltip.text == text
+        }) {
+            return;
+        }
+
+        let mut style = view.style.clone();
+        style.background = "#202020EE".into();
+        style.font_size = 12.0;
+        style.padding_x = 8;
+        style.padding_y = 5;
+        style.min_width = 0;
+        let offset = 6;
+        let (width, height) = Renderer::tooltip_size(&text, &style);
+        let max_left = bar_width.saturating_sub(width) as i32;
+        let left = (x.round() as i32 - width as i32 / 2).clamp(0, max_left.max(0));
+
         self.tooltip = None;
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-layout-tooltip"),
+            Some(&output),
+        );
+        if self.config.position == "bottom" {
+            layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+            layer.set_margin(
+                0,
+                0,
+                self.config
+                    .margin_bottom
+                    .saturating_add(bar_height)
+                    .saturating_add(offset),
+                left,
+            );
+        } else {
+            layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+            layer.set_margin(
+                self.config
+                    .margin_top
+                    .saturating_add(bar_height)
+                    .saturating_add(offset),
+                0,
+                0,
+                left,
+            );
+        }
+        layer.set_size(width, height);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(0);
+        layer.commit();
+
+        self.tooltip = Some(TooltipSurface {
+            layer,
+            text,
+            style,
+            width,
+            height,
+            configured: false,
+            bar_index,
+            item_index: None,
+        });
     }
 
     fn maybe_show_tray_tooltip(&mut self, qh: &QueueHandle<Self>) {
@@ -643,7 +757,7 @@ impl App {
             return;
         }
         if self.tooltip.as_ref().is_some_and(|tooltip| {
-            tooltip.bar_index == hover.bar_index && tooltip.item_index == hover.item_index
+            tooltip.bar_index == hover.bar_index && tooltip.item_index == Some(hover.item_index)
         }) {
             return;
         }
@@ -708,11 +822,12 @@ impl App {
         self.tooltip = Some(TooltipSurface {
             layer,
             text,
+            style,
             width,
             height,
             configured: false,
             bar_index,
-            item_index,
+            item_index: Some(item_index),
         });
     }
 
@@ -723,16 +838,12 @@ impl App {
         if !tooltip.configured || tooltip.width == 0 || tooltip.height == 0 {
             return;
         }
-        let Some(tray) = self.tray.as_ref() else {
-            return;
-        };
-
         let surface = tooltip.layer.wl_surface().clone();
         let layer = tooltip.layer.clone();
         let width = tooltip.width;
         let height = tooltip.height;
         let text = tooltip.text.clone();
-        let style = tray.tooltip_style().clone();
+        let style = tooltip.style.clone();
         let stride = width as i32 * 4;
 
         let (buffer, canvas) = match self.pool.create_buffer(
@@ -2862,6 +2973,8 @@ impl PointerHandler for App {
             match event.kind {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     self.update_tray_hover(index, event.position.0);
+                    #[cfg(mhypr_module = "layout")]
+                    self.update_layout_tooltip(qh, index, event.position.0);
                 }
                 PointerEventKind::Leave { .. } => {
                     if self
@@ -2871,9 +2984,13 @@ impl PointerHandler for App {
                     {
                         self.clear_tray_hover();
                     }
+                    #[cfg(mhypr_module = "layout")]
+                    self.clear_layout_tooltip();
                 }
                 PointerEventKind::Press { button, .. } => {
                     self.clear_tray_hover();
+                    #[cfg(mhypr_module = "layout")]
+                    self.clear_layout_tooltip();
                     match button {
                         BTN_LEFT => {
                             if !self.activate_workspace(index, event.position.0)
@@ -2922,6 +3039,8 @@ impl PointerHandler for App {
                     vertical,
                     ..
                 } => {
+                    #[cfg(mhypr_module = "layout")]
+                    self.clear_layout_tooltip();
                     let horizontal = axis_scroll_delta(horizontal);
                     if horizontal != 0 {
                         let _ = self.tray_action_at(

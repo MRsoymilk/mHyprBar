@@ -1,7 +1,7 @@
-layouts = ["dwindle", "master"]
+layouts = ["dwindle", "master", "scrolling", "monocle"]
 interval_ms = 750
-icon_width = 22
-icon_height = 16
+# Visible layout icon scale relative to the bar's available height.
+icon_scale = 0.8
 
 [style]
 foreground = "#F2F2F2"
