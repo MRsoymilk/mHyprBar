@@ -75,6 +75,9 @@ pub(super) trait StatusModule {
     fn activate(&mut self) -> Result<bool> {
         Ok(false)
     }
+    fn activate_at(&mut self, _x: f64, _y: f64) -> Result<bool> {
+        self.activate()
+    }
     fn scroll(&mut self, _direction: i32) -> Result<bool> {
         Ok(false)
     }
@@ -251,6 +254,21 @@ impl ModuleManager {
             return Ok(false);
         };
         let handled = module.module.activate()?;
+        if handled {
+            module.refresh_now(Instant::now());
+        }
+        Ok(handled)
+    }
+
+    pub fn activate_at(&mut self, name: &str, x: f64, y: f64) -> Result<bool> {
+        let Some(module) = self
+            .modules
+            .iter_mut()
+            .find(|module| module.module.name() == name)
+        else {
+            return Ok(false);
+        };
+        let handled = module.module.activate_at(x, y)?;
         if handled {
             module.refresh_now(Instant::now());
         }

@@ -2538,6 +2538,21 @@ impl App {
         };
         let name = hit.name.to_owned();
 
+        #[cfg(mhypr_module = "menu")]
+        if name == "menu" {
+            let origin_y = if self.config.position == "bottom" {
+                y
+            } else {
+                bar.height as f64 + 2.0
+            };
+            match self.modules.activate_at(&name, x, origin_y) {
+                Ok(true) => self.draw_all(),
+                Ok(false) => {}
+                Err(error) => eprintln!("mhyprbar: menu popup action failed: {error:#}"),
+            }
+            return;
+        }
+
         #[cfg(mhypr_module = "battery")]
         if name == "battery" {
             match self.toggle_battery_popup(_qh, bar_index, x) {

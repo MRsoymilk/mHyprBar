@@ -33,6 +33,21 @@ impl MenuModule {
         config.style.validate()?;
         Ok(Self { config })
     }
+
+    fn spawn(&self, position: Option<(f64, f64)>) -> Result<()> {
+        let mut command = Command::new(&self.config.command);
+        command.args(&self.config.args);
+        if let Some((x, y)) = position {
+            command
+                .arg("--popup-at")
+                .arg(format!("{x:.3}"))
+                .arg(format!("{y:.3}"));
+        }
+        command
+            .spawn()
+            .with_context(|| format!("failed to launch {}", self.config.command))?;
+        Ok(())
+    }
 }
 
 impl StatusModule for MenuModule {
@@ -53,10 +68,12 @@ impl StatusModule for MenuModule {
     }
 
     fn activate(&mut self) -> Result<bool> {
-        Command::new(&self.config.command)
-            .args(&self.config.args)
-            .spawn()
-            .with_context(|| format!("failed to launch {}", self.config.command))?;
+        self.spawn(None)?;
+        Ok(false)
+    }
+
+    fn activate_at(&mut self, x: f64, y: f64) -> Result<bool> {
+        self.spawn(Some((x, y)))?;
         Ok(false)
     }
 }
