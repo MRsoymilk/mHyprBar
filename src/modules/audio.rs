@@ -87,11 +87,17 @@ struct AudioIcons {
 
 impl AudioIcons {
     fn load() -> Result<Self> {
+        let muted = rasterize_svg("volume-muted.svg", ICON_MUTED_SVG)?;
+        let zero = rasterize_svg("volume-zero.svg", ICON_ZERO_SVG)?;
+        let low = rasterize_svg("volume-low.svg", ICON_LOW_SVG)?;
+        let high = rasterize_svg("volume-high.svg", ICON_HIGH_SVG)?;
+        let bounds = shared_alpha_bounds(&[&muted, &zero, &low, &high], "audio")?;
+
         Ok(Self {
-            muted: rasterize_svg("volume-muted.svg", ICON_MUTED_SVG)?,
-            zero: rasterize_svg("volume-zero.svg", ICON_ZERO_SVG)?,
-            low: rasterize_svg("volume-low.svg", ICON_LOW_SVG)?,
-            high: rasterize_svg("volume-high.svg", ICON_HIGH_SVG)?,
+            muted: crop_to_bounds(&muted, bounds)?,
+            zero: crop_to_bounds(&zero, bounds)?,
+            low: crop_to_bounds(&low, bounds)?,
+            high: crop_to_bounds(&high, bounds)?,
         })
     }
 
@@ -303,6 +309,14 @@ fn icon_kind(percent: u32, muted: bool) -> AudioIconKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AlphaBounds {
+    min_x: i32,
+    min_y: i32,
+    max_x: i32,
+    max_y: i32,
+}
+
 fn rasterize_svg(name: &str, svg_bytes: &[u8]) -> Result<AudioIcon> {
     const RASTER_SIZE: i32 = 96;
 
@@ -359,24 +373,23 @@ fn rasterize_svg(name: &str, svg_bytes: &[u8]) -> Result<AudioIcon> {
         output.stdout.len()
     );
 
-    crop_transparent_margin(name, &output.stdout, RASTER_SIZE, RASTER_SIZE)
+    Ok(AudioIcon {
+        pixels: Arc::from(output.stdout),
+        width: RASTER_SIZE,
+        height: RASTER_SIZE,
+    })
 }
 
-fn crop_transparent_margin(
-    name: &str,
-    pixels: &[u8],
-    width: i32,
-    height: i32,
-) -> Result<AudioIcon> {
-    let mut min_x = width;
-    let mut min_y = height;
+fn alpha_bounds(icon: &AudioIcon) -> Option<AlphaBounds> {
+    let mut min_x = icon.width;
+    let mut min_y = icon.height;
     let mut max_x = -1;
     let mut max_y = -1;
 
-    for y in 0..height {
-        for x in 0..width {
-            let offset = ((y * width + x) * 4) as usize;
-            if pixels[offset + 3] == 0 {
+    for y in 0..icon.height {
+        for x in 0..icon.width {
+            let offset = ((y * icon.width + x) * 4) as usize;
+            if icon.pixels[offset + 3] == 0 {
                 continue;
             }
             min_x = min_x.min(x);
@@ -386,19 +399,62 @@ fn crop_transparent_margin(
         }
     }
 
+    (max_x >= min_x && max_y >= min_y).then_some(AlphaBounds {
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+    })
+}
+
+fn shared_alpha_bounds(icons: &[&AudioIcon], group: &str) -> Result<AlphaBounds> {
     ensure!(
-        max_x >= min_x && max_y >= min_y,
-        "audio SVG has no visible pixels: {name}"
+        !icons.is_empty(),
+        "{group} SVG icon group must not be empty"
     );
 
-    let cropped_width = max_x - min_x + 1;
-    let cropped_height = max_y - min_y + 1;
+    let width = icons[0].width;
+    let height = icons[0].height;
+    let mut shared: Option<AlphaBounds> = None;
+
+    for icon in icons {
+        ensure!(
+            icon.width == width && icon.height == height,
+            "{group} SVG icons must share the same raster canvas"
+        );
+        let bounds = alpha_bounds(icon)
+            .with_context(|| format!("{group} SVG icon has no visible pixels"))?;
+        shared = Some(match shared {
+            None => bounds,
+            Some(current) => AlphaBounds {
+                min_x: current.min_x.min(bounds.min_x),
+                min_y: current.min_y.min(bounds.min_y),
+                max_x: current.max_x.max(bounds.max_x),
+                max_y: current.max_y.max(bounds.max_y),
+            },
+        });
+    }
+
+    shared.with_context(|| format!("{group} SVG icon group has no visible pixels"))
+}
+
+fn crop_to_bounds(icon: &AudioIcon, bounds: AlphaBounds) -> Result<AudioIcon> {
+    ensure!(
+        bounds.min_x >= 0
+            && bounds.min_y >= 0
+            && bounds.max_x < icon.width
+            && bounds.max_y < icon.height,
+        "audio SVG shared bounds are outside the raster canvas"
+    );
+
+    let cropped_width = bounds.max_x - bounds.min_x + 1;
+    let cropped_height = bounds.max_y - bounds.min_y + 1;
     let mut cropped = Vec::with_capacity(cropped_width as usize * cropped_height as usize * 4);
 
-    for y in min_y..=max_y {
-        let start = ((y * width + min_x) * 4) as usize;
+    for y in bounds.min_y..=bounds.max_y {
+        let start = ((y * icon.width + bounds.min_x) * 4) as usize;
         let end = start + cropped_width as usize * 4;
-        cropped.extend_from_slice(&pixels[start..end]);
+        cropped.extend_from_slice(&icon.pixels[start..end]);
     }
 
     Ok(AudioIcon {

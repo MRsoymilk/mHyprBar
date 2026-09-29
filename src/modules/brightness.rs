@@ -73,9 +73,13 @@ struct BrightnessIcons {
 
 impl BrightnessIcons {
     fn load() -> Result<Self> {
+        let low = rasterize_svg("brightness-low.svg", ICON_LOW_SVG)?;
+        let high = rasterize_svg("brightness-high.svg", ICON_HIGH_SVG)?;
+        let bounds = shared_alpha_bounds(&[&low, &high], "brightness")?;
+
         Ok(Self {
-            low: rasterize_svg("brightness-low.svg", ICON_LOW_SVG)?,
-            high: rasterize_svg("brightness-high.svg", ICON_HIGH_SVG)?,
+            low: crop_to_bounds(&low, bounds)?,
+            high: crop_to_bounds(&high, bounds)?,
         })
     }
 
@@ -201,6 +205,14 @@ fn icon_kind(percent: u32) -> BrightnessIconKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AlphaBounds {
+    min_x: i32,
+    min_y: i32,
+    max_x: i32,
+    max_y: i32,
+}
+
 fn rasterize_svg(name: &str, svg_bytes: &[u8]) -> Result<BrightnessIcon> {
     const RASTER_SIZE: i32 = 96;
 
@@ -257,24 +269,23 @@ fn rasterize_svg(name: &str, svg_bytes: &[u8]) -> Result<BrightnessIcon> {
         output.stdout.len()
     );
 
-    crop_transparent_margin(name, &output.stdout, RASTER_SIZE, RASTER_SIZE)
+    Ok(BrightnessIcon {
+        pixels: Arc::from(output.stdout),
+        width: RASTER_SIZE,
+        height: RASTER_SIZE,
+    })
 }
 
-fn crop_transparent_margin(
-    name: &str,
-    pixels: &[u8],
-    width: i32,
-    height: i32,
-) -> Result<BrightnessIcon> {
-    let mut min_x = width;
-    let mut min_y = height;
+fn alpha_bounds(icon: &BrightnessIcon) -> Option<AlphaBounds> {
+    let mut min_x = icon.width;
+    let mut min_y = icon.height;
     let mut max_x = -1;
     let mut max_y = -1;
 
-    for y in 0..height {
-        for x in 0..width {
-            let offset = ((y * width + x) * 4) as usize;
-            if pixels[offset + 3] == 0 {
+    for y in 0..icon.height {
+        for x in 0..icon.width {
+            let offset = ((y * icon.width + x) * 4) as usize;
+            if icon.pixels[offset + 3] == 0 {
                 continue;
             }
             min_x = min_x.min(x);
@@ -284,19 +295,62 @@ fn crop_transparent_margin(
         }
     }
 
+    (max_x >= min_x && max_y >= min_y).then_some(AlphaBounds {
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+    })
+}
+
+fn shared_alpha_bounds(icons: &[&BrightnessIcon], group: &str) -> Result<AlphaBounds> {
     ensure!(
-        max_x >= min_x && max_y >= min_y,
-        "brightness SVG has no visible pixels: {name}"
+        !icons.is_empty(),
+        "{group} SVG icon group must not be empty"
     );
 
-    let cropped_width = max_x - min_x + 1;
-    let cropped_height = max_y - min_y + 1;
+    let width = icons[0].width;
+    let height = icons[0].height;
+    let mut shared: Option<AlphaBounds> = None;
+
+    for icon in icons {
+        ensure!(
+            icon.width == width && icon.height == height,
+            "{group} SVG icons must share the same raster canvas"
+        );
+        let bounds = alpha_bounds(icon)
+            .with_context(|| format!("{group} SVG icon has no visible pixels"))?;
+        shared = Some(match shared {
+            None => bounds,
+            Some(current) => AlphaBounds {
+                min_x: current.min_x.min(bounds.min_x),
+                min_y: current.min_y.min(bounds.min_y),
+                max_x: current.max_x.max(bounds.max_x),
+                max_y: current.max_y.max(bounds.max_y),
+            },
+        });
+    }
+
+    shared.with_context(|| format!("{group} SVG icon group has no visible pixels"))
+}
+
+fn crop_to_bounds(icon: &BrightnessIcon, bounds: AlphaBounds) -> Result<BrightnessIcon> {
+    ensure!(
+        bounds.min_x >= 0
+            && bounds.min_y >= 0
+            && bounds.max_x < icon.width
+            && bounds.max_y < icon.height,
+        "brightness SVG shared bounds are outside the raster canvas"
+    );
+
+    let cropped_width = bounds.max_x - bounds.min_x + 1;
+    let cropped_height = bounds.max_y - bounds.min_y + 1;
     let mut cropped = Vec::with_capacity(cropped_width as usize * cropped_height as usize * 4);
 
-    for y in min_y..=max_y {
-        let start = ((y * width + min_x) * 4) as usize;
+    for y in bounds.min_y..=bounds.max_y {
+        let start = ((y * icon.width + bounds.min_x) * 4) as usize;
         let end = start + cropped_width as usize * 4;
-        cropped.extend_from_slice(&pixels[start..end]);
+        cropped.extend_from_slice(&icon.pixels[start..end]);
     }
 
     Ok(BrightnessIcon {
@@ -435,7 +489,61 @@ fn default_fill() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BrightnessIconKind, icon_kind};
+    use std::sync::Arc;
+
+    use super::{
+        AlphaBounds, BrightnessIcon, BrightnessIconKind, alpha_bounds, crop_to_bounds, icon_kind,
+        shared_alpha_bounds,
+    };
+
+    #[test]
+    fn shared_bounds_preserve_relative_icon_size() {
+        let mut large = vec![0_u8; 8 * 8 * 4];
+        let mut small = vec![0_u8; 8 * 8 * 4];
+        for y in 1..7 {
+            for x in 1..7 {
+                large[((y * 8 + x) * 4 + 3) as usize] = 255;
+            }
+        }
+        for y in 2..6 {
+            for x in 2..6 {
+                small[((y * 8 + x) * 4 + 3) as usize] = 255;
+            }
+        }
+
+        let large = BrightnessIcon {
+            pixels: Arc::from(large),
+            width: 8,
+            height: 8,
+        };
+        let small = BrightnessIcon {
+            pixels: Arc::from(small),
+            width: 8,
+            height: 8,
+        };
+        let shared = shared_alpha_bounds(&[&large, &small], "test").expect("shared bounds");
+        assert_eq!(
+            shared,
+            AlphaBounds {
+                min_x: 1,
+                min_y: 1,
+                max_x: 6,
+                max_y: 6
+            }
+        );
+
+        let cropped_small = crop_to_bounds(&small, shared).expect("crop small");
+        assert_eq!((cropped_small.width, cropped_small.height), (6, 6));
+        assert_eq!(
+            alpha_bounds(&cropped_small).expect("small visible bounds"),
+            AlphaBounds {
+                min_x: 1,
+                min_y: 1,
+                max_x: 4,
+                max_y: 4
+            }
+        );
+    }
 
     #[test]
     fn chooses_svg_icon_by_brightness() {
