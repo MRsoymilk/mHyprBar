@@ -1685,7 +1685,7 @@ impl Renderer {
             let Some(view) = modules.view(name) else {
                 continue;
             };
-            let module_width = module_width(&view);
+            let module_width = module_width(&view, height as i32);
             if module_width <= 0 {
                 continue;
             }
@@ -1762,7 +1762,7 @@ impl Renderer {
         let padding_x = view.style.padding_x.max(0);
         let padding_y = view.style.padding_y.max(0);
         let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
-        let icon_size = audio.icon_size.min(content_h).max(7);
+        let icon_size = audio_icon_slot_size(audio, view.style, rect.h);
         let icon_x = rect.x.saturating_add(padding_x);
         let icon_y = rect
             .y
@@ -1781,7 +1781,8 @@ impl Renderer {
             icon_x,
             icon_y,
             icon_size,
-            audio.icon_size,
+            audio.icon_width,
+            audio.icon_height,
             &audio.icon_pixels,
             color,
         );
@@ -2718,10 +2719,11 @@ pub fn module_at_x<'a>(
         0
     };
     let (left_x, center_x, right_x) = group_origins(width, workspace_width, config, modules);
+    let bar_height = config.height as i32;
 
-    hit_group(x, left_x, &config.left, modules)
-        .or_else(|| hit_group(x, center_x, &config.center, modules))
-        .or_else(|| hit_group(x, right_x, &config.right, modules))
+    hit_group(x, left_x, &config.left, modules, bar_height)
+        .or_else(|| hit_group(x, center_x, &config.center, modules, bar_height))
+        .or_else(|| hit_group(x, right_x, &config.right, modules, bar_height))
 }
 
 fn group_origins(
@@ -2730,9 +2732,10 @@ fn group_origins(
     config: &BarConfig,
     modules: &ModuleManager,
 ) -> (i32, i32, i32) {
-    let left_width = group_width(&config.left, modules);
-    let center_width = group_width(&config.center, modules);
-    let right_width = group_width(&config.right, modules);
+    let bar_height = config.height as i32;
+    let left_width = group_width(&config.left, modules, bar_height);
+    let center_width = group_width(&config.center, modules, bar_height);
+    let right_width = group_width(&config.right, modules, bar_height);
 
     let left_x = workspace_width;
     let left_end = left_x.saturating_add(left_width);
@@ -2753,13 +2756,14 @@ fn hit_group<'a>(
     start_x: i32,
     names: &'a [String],
     modules: &ModuleManager,
+    bar_height: i32,
 ) -> Option<ModuleHit<'a>> {
     let mut cursor = start_x;
     for name in names {
         let Some(view) = modules.view(name) else {
             continue;
         };
-        let width = module_width(&view);
+        let width = module_width(&view, bar_height);
         if x >= cursor as f64 && x < cursor.saturating_add(width) as f64 {
             return Some(ModuleHit {
                 name: name.as_str(),
@@ -2771,15 +2775,31 @@ fn hit_group<'a>(
     None
 }
 
-fn group_width(names: &[String], modules: &ModuleManager) -> i32 {
+fn group_width(names: &[String], modules: &ModuleManager, bar_height: i32) -> i32 {
     names
         .iter()
         .filter_map(|name| modules.view(name))
-        .map(|view| module_width(&view))
+        .map(|view| module_width(&view, bar_height))
         .fold(0_i32, i32::saturating_add)
 }
 
-fn module_width(view: &ModuleView<'_>) -> i32 {
+#[cfg(mhypr_module = "audio")]
+fn audio_icon_slot_size(
+    audio: &crate::modules::audio::AudioVisual,
+    style: &ModuleStyle,
+    bar_height: i32,
+) -> i32 {
+    let available = bar_height
+        .saturating_sub(style.padding_y.max(0).saturating_mul(2))
+        .max(1);
+    if audio.icon_size > 0 {
+        audio.icon_size.min(available).max(1)
+    } else {
+        available
+    }
+}
+
+fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     if let Some(width) = view.width_override {
         return width.max(0);
     }
@@ -2788,8 +2808,8 @@ fn module_width(view: &ModuleView<'_>) -> i32 {
     if let ModuleVisual::Audio(audio) = &view.visual {
         let style = view.style;
         let percent_width = estimate_text_width("150%", style);
-        let content = audio
-            .icon_size
+        let icon_slot = audio_icon_slot_size(audio, style, bar_height);
+        let content = icon_slot
             .saturating_add(audio.text_gap)
             .saturating_add(audio.bar_width)
             .saturating_add(audio.text_gap)
@@ -3034,23 +3054,44 @@ fn draw_tinted_rgba_mask(
     x: i32,
     y: i32,
     target_size: i32,
-    source_size: i32,
+    source_width: i32,
+    source_height: i32,
     pixels: &[u8],
     color: [u8; 4],
 ) {
-    if target_size <= 0 || source_size <= 0 {
-        return;
-    }
-    let source = source_size as usize;
-    if pixels.len() < source.saturating_mul(source).saturating_mul(4) {
+    if target_size <= 0 || source_width <= 0 || source_height <= 0 {
         return;
     }
 
-    for dy in 0..target_size {
-        let sy = (dy as i64 * source_size as i64 / target_size as i64) as usize;
-        for dx in 0..target_size {
-            let sx = (dx as i64 * source_size as i64 / target_size as i64) as usize;
-            let offset = (sy * source + sx) * 4;
+    let sw = source_width as usize;
+    let sh = source_height as usize;
+    if pixels.len() < sw.saturating_mul(sh).saturating_mul(4) {
+        return;
+    }
+
+    let (draw_w, draw_h) = if source_width >= source_height {
+        (
+            target_size,
+            ((source_height as i64 * target_size as i64) / source_width as i64)
+                .max(1)
+                .min(target_size as i64) as i32,
+        )
+    } else {
+        (
+            ((source_width as i64 * target_size as i64) / source_height as i64)
+                .max(1)
+                .min(target_size as i64) as i32,
+            target_size,
+        )
+    };
+    let x0 = x.saturating_add((target_size - draw_w) / 2);
+    let y0 = y.saturating_add((target_size - draw_h) / 2);
+
+    for dy in 0..draw_h {
+        let sy = (dy as i64 * source_height as i64 / draw_h as i64) as usize;
+        for dx in 0..draw_w {
+            let sx = (dx as i64 * source_width as i64 / draw_w as i64) as usize;
+            let offset = (sy * sw + sx) * 4;
             let source_alpha = pixels[offset + 3] as u16;
             if source_alpha == 0 {
                 continue;
@@ -3060,8 +3101,8 @@ fn draw_tinted_rgba_mask(
                 canvas,
                 width,
                 height,
-                x.saturating_add(dx),
-                y.saturating_add(dy),
+                x0.saturating_add(dx),
+                y0.saturating_add(dy),
                 [color[0], color[1], color[2], alpha],
             );
         }

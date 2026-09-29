@@ -71,29 +71,36 @@ enum AudioIconKind {
 }
 
 #[derive(Clone)]
+struct AudioIcon {
+    pixels: Arc<[u8]>,
+    width: i32,
+    height: i32,
+}
+
+#[derive(Clone)]
 struct AudioIcons {
-    muted: Arc<[u8]>,
-    zero: Arc<[u8]>,
-    low: Arc<[u8]>,
-    high: Arc<[u8]>,
+    muted: AudioIcon,
+    zero: AudioIcon,
+    low: AudioIcon,
+    high: AudioIcon,
 }
 
 impl AudioIcons {
-    fn load(size: i32) -> Result<Self> {
+    fn load() -> Result<Self> {
         Ok(Self {
-            muted: rasterize_svg("volume-muted.svg", ICON_MUTED_SVG, size)?,
-            zero: rasterize_svg("volume-zero.svg", ICON_ZERO_SVG, size)?,
-            low: rasterize_svg("volume-low.svg", ICON_LOW_SVG, size)?,
-            high: rasterize_svg("volume-high.svg", ICON_HIGH_SVG, size)?,
+            muted: rasterize_svg("volume-muted.svg", ICON_MUTED_SVG)?,
+            zero: rasterize_svg("volume-zero.svg", ICON_ZERO_SVG)?,
+            low: rasterize_svg("volume-low.svg", ICON_LOW_SVG)?,
+            high: rasterize_svg("volume-high.svg", ICON_HIGH_SVG)?,
         })
     }
 
-    fn icon(&self, kind: AudioIconKind) -> Arc<[u8]> {
+    fn icon(&self, kind: AudioIconKind) -> AudioIcon {
         match kind {
-            AudioIconKind::Muted => Arc::clone(&self.muted),
-            AudioIconKind::Zero => Arc::clone(&self.zero),
-            AudioIconKind::Low => Arc::clone(&self.low),
-            AudioIconKind::High => Arc::clone(&self.high),
+            AudioIconKind::Muted => self.muted.clone(),
+            AudioIconKind::Zero => self.zero.clone(),
+            AudioIconKind::Low => self.low.clone(),
+            AudioIconKind::High => self.high.clone(),
         }
     }
 }
@@ -104,6 +111,8 @@ pub struct AudioVisual {
     pub muted: bool,
     pub icon_size: i32,
     pub icon_pixels: Arc<[u8]>,
+    pub icon_width: i32,
+    pub icon_height: i32,
     pub bar_width: i32,
     pub bar_height: i32,
     pub text_gap: i32,
@@ -132,7 +141,7 @@ impl AudioModule {
             percent: 0,
             muted: false,
         };
-        let icons = AudioIcons::load(config.icon_size)?;
+        let icons = AudioIcons::load()?;
         let bar_background = config::parse_rgba(&config.bar_background)?;
         let fill = config::parse_rgba(&config.fill)?;
         let muted_fill = config::parse_rgba(&config.muted_fill)?;
@@ -252,11 +261,14 @@ impl StatusModule for AudioModule {
 
     fn visual(&self) -> ModuleVisual {
         let kind = icon_kind(self.state.percent, self.state.muted);
+        let icon = self.icons.icon(kind);
         ModuleVisual::Audio(AudioVisual {
             percent: self.state.percent,
             muted: self.state.muted,
             icon_size: self.config.icon_size,
-            icon_pixels: self.icons.icon(kind),
+            icon_pixels: icon.pixels,
+            icon_width: icon.width,
+            icon_height: icon.height,
             bar_width: self.config.bar_width,
             bar_height: self.config.bar_height,
             text_gap: self.config.text_gap,
@@ -291,14 +303,14 @@ fn icon_kind(percent: u32, muted: bool) -> AudioIconKind {
     }
 }
 
-fn rasterize_svg(name: &str, svg_bytes: &[u8], size: i32) -> Result<Arc<[u8]>> {
-    ensure!(size > 0, "audio icon size must be greater than zero");
+fn rasterize_svg(name: &str, svg_bytes: &[u8]) -> Result<AudioIcon> {
+    const RASTER_SIZE: i32 = 96;
 
     let mut svg = Command::new("rsvg-convert")
         .arg("--width")
-        .arg(size.to_string())
+        .arg(RASTER_SIZE.to_string())
         .arg("--height")
-        .arg(size.to_string())
+        .arg(RASTER_SIZE.to_string())
         .arg("--keep-aspect-ratio")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -340,13 +352,60 @@ fn rasterize_svg(name: &str, svg_bytes: &[u8], size: i32) -> Result<Arc<[u8]>> {
         bail!("audio SVG rasterization failed for {name}");
     }
 
-    let expected = size as usize * size as usize * 4;
+    let expected = RASTER_SIZE as usize * RASTER_SIZE as usize * 4;
     ensure!(
         output.stdout.len() == expected,
-        "audio SVG rasterizer returned {} bytes for {size}x{size}, expected {expected}: {name}",
+        "audio SVG rasterizer returned {} bytes for {RASTER_SIZE}x{RASTER_SIZE}, expected {expected}: {name}",
         output.stdout.len()
     );
-    Ok(Arc::from(output.stdout))
+
+    crop_transparent_margin(name, &output.stdout, RASTER_SIZE, RASTER_SIZE)
+}
+
+fn crop_transparent_margin(
+    name: &str,
+    pixels: &[u8],
+    width: i32,
+    height: i32,
+) -> Result<AudioIcon> {
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = -1;
+    let mut max_y = -1;
+
+    for y in 0..height {
+        for x in 0..width {
+            let offset = ((y * width + x) * 4) as usize;
+            if pixels[offset + 3] == 0 {
+                continue;
+            }
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    ensure!(
+        max_x >= min_x && max_y >= min_y,
+        "audio SVG has no visible pixels: {name}"
+    );
+
+    let cropped_width = max_x - min_x + 1;
+    let cropped_height = max_y - min_y + 1;
+    let mut cropped = Vec::with_capacity(cropped_width as usize * cropped_height as usize * 4);
+
+    for y in min_y..=max_y {
+        let start = ((y * width + min_x) * 4) as usize;
+        let end = start + cropped_width as usize * 4;
+        cropped.extend_from_slice(&pixels[start..end]);
+    }
+
+    Ok(AudioIcon {
+        pixels: Arc::from(cropped),
+        width: cropped_width,
+        height: cropped_height,
+    })
 }
 
 fn validate_config(config: &AudioConfig) -> Result<()> {
@@ -368,8 +427,10 @@ fn validate_config(config: &AudioConfig) -> Result<()> {
         "audio max_percent must be in 100..=200"
     );
     ensure!(
-        config.icon_size > 4 && config.bar_width > 0 && config.bar_height > 0,
-        "audio visual dimensions must be positive"
+        (config.icon_size == 0 || config.icon_size > 4)
+            && config.bar_width > 0
+            && config.bar_height > 0,
+        "audio icon_size must be 0 (auto) or greater than 4, and bar dimensions must be positive"
     );
     ensure!(config.text_gap >= 0, "audio text_gap must not be negative");
     config.style.validate()?;
@@ -482,7 +543,7 @@ fn default_max_percent() -> u32 {
 }
 
 fn default_icon_size() -> i32 {
-    15
+    0
 }
 
 fn default_bar_width() -> i32 {
