@@ -1774,87 +1774,17 @@ impl Renderer {
             audio.fill
         };
 
-        let body_h = (icon_size / 3).max(3);
-        fill_rect(
+        draw_tinted_rgba_mask(
             canvas,
             width,
             height,
-            Rect {
-                x: icon_x,
-                y: icon_y + (icon_size - body_h) / 2,
-                w: 4,
-                h: body_h,
-            },
+            icon_x,
+            icon_y,
+            icon_size,
+            audio.icon_size,
+            &audio.icon_pixels,
             color,
         );
-        fill_rect(
-            canvas,
-            width,
-            height,
-            Rect {
-                x: icon_x + 4,
-                y: icon_y + 2,
-                w: 4,
-                h: (icon_size - 4).max(3),
-            },
-            color,
-        );
-
-        if audio.muted {
-            fill_rect(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: icon_x + 10,
-                    y: icon_y + 3,
-                    w: 2,
-                    h: (icon_size - 6).max(3),
-                },
-                color,
-            );
-            fill_rect(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: icon_x + 8,
-                    y: icon_y + icon_size / 2 - 1,
-                    w: 6,
-                    h: 2,
-                },
-                color,
-            );
-        } else {
-            if audio.percent > 0 {
-                fill_rect(
-                    canvas,
-                    width,
-                    height,
-                    Rect {
-                        x: icon_x + 10,
-                        y: icon_y + icon_size / 3,
-                        w: 1,
-                        h: (icon_size / 3).max(3),
-                    },
-                    color,
-                );
-            }
-            if audio.percent >= 50 {
-                fill_rect(
-                    canvas,
-                    width,
-                    height,
-                    Rect {
-                        x: icon_x + 13,
-                        y: icon_y + 2,
-                        w: 1,
-                        h: (icon_size - 4).max(4),
-                    },
-                    color,
-                );
-            }
-        }
 
         let bar_x = icon_x
             .saturating_add(icon_size)
@@ -3093,6 +3023,49 @@ fn lerp_rgba(from: [u8; 4], to: [u8; 4], t: f32) -> [u8; 4] {
         mix(from[2], to[2]),
         mix(from[3], to[3]),
     ]
+}
+
+#[cfg(mhypr_module = "audio")]
+#[allow(clippy::too_many_arguments)]
+fn draw_tinted_rgba_mask(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    target_size: i32,
+    source_size: i32,
+    pixels: &[u8],
+    color: [u8; 4],
+) {
+    if target_size <= 0 || source_size <= 0 {
+        return;
+    }
+    let source = source_size as usize;
+    if pixels.len() < source.saturating_mul(source).saturating_mul(4) {
+        return;
+    }
+
+    for dy in 0..target_size {
+        let sy = (dy as i64 * source_size as i64 / target_size as i64) as usize;
+        for dx in 0..target_size {
+            let sx = (dx as i64 * source_size as i64 / target_size as i64) as usize;
+            let offset = (sy * source + sx) * 4;
+            let source_alpha = pixels[offset + 3] as u16;
+            if source_alpha == 0 {
+                continue;
+            }
+            let alpha = ((source_alpha * color[3] as u16) / 255) as u8;
+            blend_pixel_rgba(
+                canvas,
+                width,
+                height,
+                x.saturating_add(dx),
+                y.saturating_add(dy),
+                [color[0], color[1], color[2], alpha],
+            );
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

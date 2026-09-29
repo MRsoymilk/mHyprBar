@@ -1,4 +1,9 @@
-use std::{process::Command, time::Duration};
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -8,6 +13,11 @@ use crate::config::{self, ModuleStyle};
 
 pub const NAME: &str = "audio";
 pub const CONFIG_FILE: &str = "modules/audio.toml";
+
+const ICON_MUTED_SVG: &[u8] = include_bytes!("../../res/audio/volume-muted.svg");
+const ICON_ZERO_SVG: &[u8] = include_bytes!("../../res/audio/volume-zero.svg");
+const ICON_LOW_SVG: &[u8] = include_bytes!("../../res/audio/volume-low.svg");
+const ICON_HIGH_SVG: &[u8] = include_bytes!("../../res/audio/volume-high.svg");
 
 #[derive(Debug, Deserialize)]
 struct AudioConfig {
@@ -52,11 +62,48 @@ enum AudioBackend {
     PulseAudio,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioIconKind {
+    Muted,
+    Zero,
+    Low,
+    High,
+}
+
+#[derive(Clone)]
+struct AudioIcons {
+    muted: Arc<[u8]>,
+    zero: Arc<[u8]>,
+    low: Arc<[u8]>,
+    high: Arc<[u8]>,
+}
+
+impl AudioIcons {
+    fn load(size: i32) -> Result<Self> {
+        Ok(Self {
+            muted: rasterize_svg("volume-muted.svg", ICON_MUTED_SVG, size)?,
+            zero: rasterize_svg("volume-zero.svg", ICON_ZERO_SVG, size)?,
+            low: rasterize_svg("volume-low.svg", ICON_LOW_SVG, size)?,
+            high: rasterize_svg("volume-high.svg", ICON_HIGH_SVG, size)?,
+        })
+    }
+
+    fn icon(&self, kind: AudioIconKind) -> Arc<[u8]> {
+        match kind {
+            AudioIconKind::Muted => Arc::clone(&self.muted),
+            AudioIconKind::Zero => Arc::clone(&self.zero),
+            AudioIconKind::Low => Arc::clone(&self.low),
+            AudioIconKind::High => Arc::clone(&self.high),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AudioVisual {
     pub percent: u32,
     pub muted: bool,
     pub icon_size: i32,
+    pub icon_pixels: Arc<[u8]>,
     pub bar_width: i32,
     pub bar_height: i32,
     pub text_gap: i32,
@@ -69,6 +116,7 @@ pub struct AudioModule {
     config: AudioConfig,
     backend: AudioBackend,
     state: VolumeState,
+    icons: AudioIcons,
     bar_background: [u8; 4],
     fill: [u8; 4],
     muted_fill: [u8; 4],
@@ -84,6 +132,7 @@ impl AudioModule {
             percent: 0,
             muted: false,
         };
+        let icons = AudioIcons::load(config.icon_size)?;
         let bar_background = config::parse_rgba(&config.bar_background)?;
         let fill = config::parse_rgba(&config.fill)?;
         let muted_fill = config::parse_rgba(&config.muted_fill)?;
@@ -92,6 +141,7 @@ impl AudioModule {
             config,
             backend,
             state,
+            icons,
             bar_background,
             fill,
             muted_fill,
@@ -201,10 +251,12 @@ impl StatusModule for AudioModule {
     }
 
     fn visual(&self) -> ModuleVisual {
+        let kind = icon_kind(self.state.percent, self.state.muted);
         ModuleVisual::Audio(AudioVisual {
             percent: self.state.percent,
             muted: self.state.muted,
             icon_size: self.config.icon_size,
+            icon_pixels: self.icons.icon(kind),
             bar_width: self.config.bar_width,
             bar_height: self.config.bar_height,
             text_gap: self.config.text_gap,
@@ -225,6 +277,76 @@ impl StatusModule for AudioModule {
     fn scroll(&mut self, direction: i32) -> Result<bool> {
         self.adjust(direction)
     }
+}
+
+fn icon_kind(percent: u32, muted: bool) -> AudioIconKind {
+    if muted {
+        AudioIconKind::Muted
+    } else if percent == 0 {
+        AudioIconKind::Zero
+    } else if percent < 50 {
+        AudioIconKind::Low
+    } else {
+        AudioIconKind::High
+    }
+}
+
+fn rasterize_svg(name: &str, svg_bytes: &[u8], size: i32) -> Result<Arc<[u8]>> {
+    ensure!(size > 0, "audio icon size must be greater than zero");
+
+    let mut svg = Command::new("rsvg-convert")
+        .arg("--width")
+        .arg(size.to_string())
+        .arg("--height")
+        .arg(size.to_string())
+        .arg("--keep-aspect-ratio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to launch rsvg-convert for {name}"))?;
+
+    let stdout = svg
+        .stdout
+        .take()
+        .context("failed to capture rsvg-convert output")?;
+    let mut svg_stdin = svg
+        .stdin
+        .take()
+        .context("failed to open rsvg-convert stdin")?;
+
+    let magick = Command::new("magick")
+        .arg("png:-")
+        .arg("rgba:-")
+        .stdin(Stdio::from(stdout))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to launch magick for {name}"))?;
+
+    svg_stdin
+        .write_all(svg_bytes)
+        .with_context(|| format!("failed to feed SVG data for {name}"))?;
+    drop(svg_stdin);
+
+    let status = svg
+        .wait()
+        .with_context(|| format!("failed to wait for rsvg-convert for {name}"))?;
+    let output = magick
+        .wait_with_output()
+        .with_context(|| format!("failed to wait for magick for {name}"))?;
+
+    if !status.success() || !output.status.success() {
+        bail!("audio SVG rasterization failed for {name}");
+    }
+
+    let expected = size as usize * size as usize * 4;
+    ensure!(
+        output.stdout.len() == expected,
+        "audio SVG rasterizer returned {} bytes for {size}x{size}, expected {expected}: {name}",
+        output.stdout.len()
+    );
+    Ok(Arc::from(output.stdout))
 }
 
 fn validate_config(config: &AudioConfig) -> Result<()> {
@@ -389,7 +511,7 @@ fn default_muted_fill() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{VolumeState, parse_pactl_state, parse_wpctl_volume};
+    use super::{AudioIconKind, VolumeState, icon_kind, parse_pactl_state, parse_wpctl_volume};
 
     #[test]
     fn parses_wpctl_volume() {
@@ -407,6 +529,16 @@ mod tests {
                 muted: true
             }
         );
+    }
+
+    #[test]
+    fn chooses_svg_icon_by_volume_state() {
+        assert_eq!(icon_kind(100, true), AudioIconKind::Muted);
+        assert_eq!(icon_kind(0, false), AudioIconKind::Zero);
+        assert_eq!(icon_kind(1, false), AudioIconKind::Low);
+        assert_eq!(icon_kind(49, false), AudioIconKind::Low);
+        assert_eq!(icon_kind(50, false), AudioIconKind::High);
+        assert_eq!(icon_kind(150, false), AudioIconKind::High);
     }
 
     #[test]
