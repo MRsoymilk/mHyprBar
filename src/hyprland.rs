@@ -90,8 +90,23 @@ struct WorkspaceJson {
 #[cfg(mhypr_module = "layout")]
 #[derive(Clone, Debug, Deserialize)]
 struct ActiveWorkspaceJson {
+    id: i32,
     #[serde(rename = "tiledLayout", default)]
     tiled_layout: String,
+}
+
+#[cfg(mhypr_module = "layout")]
+#[derive(Clone, Debug, Deserialize)]
+struct ClientWorkspaceJson {
+    id: i32,
+}
+
+#[cfg(mhypr_module = "layout")]
+#[derive(Clone, Debug, Deserialize)]
+struct ClientJson {
+    #[serde(default)]
+    floating: bool,
+    workspace: ClientWorkspaceJson,
 }
 
 #[derive(Clone, Debug)]
@@ -229,6 +244,19 @@ pub fn active_layout() -> Result<String> {
     let raw = request("j/activeworkspace")?;
     let workspace: ActiveWorkspaceJson =
         serde_json::from_str(raw.trim()).context("invalid Hyprland activeworkspace JSON")?;
+
+    let clients_raw = request("j/clients")?;
+    let clients: Vec<ClientJson> =
+        serde_json::from_str(clients_raw.trim()).context("invalid Hyprland clients JSON")?;
+    let workspace_clients = clients
+        .iter()
+        .filter(|client| client.workspace.id == workspace.id)
+        .collect::<Vec<_>>();
+
+    if !workspace_clients.is_empty() && workspace_clients.iter().all(|client| client.floating) {
+        return Ok("floating".into());
+    }
+
     if workspace.tiled_layout.trim().is_empty() {
         Ok("unknown".into())
     } else {

@@ -21,6 +21,7 @@ const ICON_DWINDLE_PNG: &[u8] = include_bytes!("../../res/layout/layout-dwindle.
 const ICON_MASTER_PNG: &[u8] = include_bytes!("../../res/layout/layout-master.png");
 const ICON_SCROLLING_PNG: &[u8] = include_bytes!("../../res/layout/layout-scrolling.png");
 const ICON_MONOCLE_PNG: &[u8] = include_bytes!("../../res/layout/layout-monocle.png");
+const ICON_FLOATING_PNG: &[u8] = include_bytes!("../../res/layout/floating.png");
 
 #[derive(Debug, Deserialize)]
 struct LayoutConfig {
@@ -40,6 +41,7 @@ enum LayoutIconKind {
     Master,
     Scrolling,
     Monocle,
+    Floating,
 }
 
 #[derive(Clone)]
@@ -55,6 +57,7 @@ struct LayoutIcons {
     master: LayoutIcon,
     scrolling: LayoutIcon,
     monocle: LayoutIcon,
+    floating: LayoutIcon,
 }
 
 impl LayoutIcons {
@@ -63,13 +66,18 @@ impl LayoutIcons {
         let master = rasterize_png("layout-master.png", ICON_MASTER_PNG)?;
         let scrolling = rasterize_png("layout-scrolling.png", ICON_SCROLLING_PNG)?;
         let monocle = rasterize_png("layout-monocle.png", ICON_MONOCLE_PNG)?;
-        let bounds = shared_alpha_bounds(&[&dwindle, &master, &scrolling, &monocle], "layout")?;
+        let floating = rasterize_png("floating.png", ICON_FLOATING_PNG)?;
+        let bounds = shared_alpha_bounds(
+            &[&dwindle, &master, &scrolling, &monocle, &floating],
+            "layout",
+        )?;
 
         Ok(Self {
             dwindle: crop_to_bounds(&dwindle, bounds)?,
             master: crop_to_bounds(&master, bounds)?,
             scrolling: crop_to_bounds(&scrolling, bounds)?,
             monocle: crop_to_bounds(&monocle, bounds)?,
+            floating: crop_to_bounds(&floating, bounds)?,
         })
     }
 
@@ -79,6 +87,7 @@ impl LayoutIcons {
             LayoutIconKind::Master => self.master.clone(),
             LayoutIconKind::Scrolling => self.scrolling.clone(),
             LayoutIconKind::Monocle => self.monocle.clone(),
+            LayoutIconKind::Floating => self.floating.clone(),
         }
     }
 }
@@ -203,6 +212,7 @@ fn layout_icon_kind(name: &str) -> Option<LayoutIconKind> {
         "master" => Some(LayoutIconKind::Master),
         "scrolling" => Some(LayoutIconKind::Scrolling),
         "monocle" => Some(LayoutIconKind::Monocle),
+        "floating" => Some(LayoutIconKind::Floating),
         _ => None,
     }
 }
@@ -213,6 +223,7 @@ pub fn layout_display_name(name: &str) -> String {
         "master" => "Master".into(),
         "scrolling" => "Scrolling".into(),
         "monocle" => "Monocle".into(),
+        "floating" => "Floating".into(),
         _ if name.trim().is_empty() => "Layout".into(),
         _ => name.trim().to_owned(),
     }
