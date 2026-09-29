@@ -4,6 +4,9 @@ paths = ["/var", "/home", "/boot", "/"]
 
 interval_ms = 5000
 
+# Visible disk SVG scale relative to the bar's available height.
+icon_scale = 0.8
+icon_gap = 4
 bar_width = 40
 bar_height = 14
 bar_border_width = 1

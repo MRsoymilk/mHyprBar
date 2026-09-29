@@ -1,4 +1,14 @@
-use std::{collections::HashSet, env, ffi::CString, fs, mem::MaybeUninit, time::Duration};
+use std::{
+    collections::HashSet,
+    env,
+    ffi::CString,
+    fs,
+    io::Write,
+    mem::MaybeUninit,
+    process::{Command, Stdio},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -8,6 +18,8 @@ use crate::config::{self, ModuleStyle};
 
 pub const NAME: &str = "disk";
 pub const CONFIG_FILE: &str = "modules/disk.toml";
+
+const ICON_DISK_SVG: &[u8] = include_bytes!("../../res/disk/disk.svg");
 
 #[derive(Debug, Deserialize)]
 struct DiskConfig {
@@ -19,6 +31,10 @@ struct DiskConfig {
     mounts: Vec<String>,
     #[serde(default = "default_interval_ms")]
     interval_ms: u64,
+    #[serde(default = "default_icon_scale")]
+    icon_scale: f32,
+    #[serde(default = "default_icon_gap")]
+    icon_gap: i32,
     #[serde(default = "default_bar_width")]
     bar_width: i32,
     #[serde(default = "default_bar_height")]
@@ -57,8 +73,20 @@ impl DiskStats {
 }
 
 #[derive(Clone)]
+struct DiskIcon {
+    pixels: Arc<[u8]>,
+    width: i32,
+    height: i32,
+}
+
+#[derive(Clone)]
 pub struct DiskVisual {
     pub percent: f32,
+    pub icon_scale: f32,
+    pub icon_gap: i32,
+    pub icon_pixels: Arc<[u8]>,
+    pub icon_width: i32,
+    pub icon_height: i32,
     pub bar_width: i32,
     pub bar_height: i32,
     pub bar_border_width: i32,
@@ -70,6 +98,7 @@ pub struct DiskVisual {
 pub struct DiskModule {
     config: DiskConfig,
     stats: DiskStats,
+    icon: DiskIcon,
     bar_background: [u8; 4],
     bar_fill: [u8; 4],
     bar_border: [u8; 4],
@@ -83,6 +112,11 @@ impl DiskModule {
             config.interval_ms > 0,
             "disk interval_ms must be greater than zero"
         );
+        ensure!(
+            config.icon_scale.is_finite() && (0.1..=1.0).contains(&config.icon_scale),
+            "disk icon_scale must be in 0.1..=1.0"
+        );
+        ensure!(config.icon_gap >= 0, "disk icon_gap must not be negative");
         ensure!(
             config.bar_width > 0,
             "disk bar_width must be greater than zero"
@@ -99,6 +133,7 @@ impl DiskModule {
         let _ = configured_paths_from(&config)?;
         let _ = crate::disk_popup::DiskPopupConfig::load()?;
 
+        let icon = rasterize_svg("disk.svg", ICON_DISK_SVG)?;
         let bar_background = config::parse_rgba(&config.bar_background)?;
         let bar_fill = config::parse_rgba(&config.bar_fill)?;
         let bar_border = config::parse_rgba(&config.bar_border)?;
@@ -107,6 +142,7 @@ impl DiskModule {
         Ok(Self {
             config,
             stats,
+            icon,
             bar_background,
             bar_fill,
             bar_border,
@@ -141,6 +177,11 @@ impl StatusModule for DiskModule {
     fn visual(&self) -> ModuleVisual {
         ModuleVisual::Disk(DiskVisual {
             percent: self.stats.percent(),
+            icon_scale: self.config.icon_scale,
+            icon_gap: self.config.icon_gap,
+            icon_pixels: Arc::clone(&self.icon.pixels),
+            icon_width: self.icon.width,
+            icon_height: self.icon.height,
             bar_width: self.config.bar_width,
             bar_height: self.config.bar_height,
             bar_border_width: self.config.bar_border_width,
@@ -279,8 +320,117 @@ fn resolve_path(path: &str) -> Result<String> {
     Ok(path.to_owned())
 }
 
+fn rasterize_svg(name: &str, svg_bytes: &[u8]) -> Result<DiskIcon> {
+    const RASTER_SIZE: i32 = 96;
+
+    let mut svg = Command::new("rsvg-convert")
+        .arg("--width")
+        .arg(RASTER_SIZE.to_string())
+        .arg("--height")
+        .arg(RASTER_SIZE.to_string())
+        .arg("--keep-aspect-ratio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to launch rsvg-convert for {name}"))?;
+
+    let stdout = svg
+        .stdout
+        .take()
+        .context("failed to capture rsvg-convert output")?;
+    let mut svg_stdin = svg
+        .stdin
+        .take()
+        .context("failed to open rsvg-convert stdin")?;
+
+    let magick = Command::new("magick")
+        .arg("png:-")
+        .arg("rgba:-")
+        .stdin(Stdio::from(stdout))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to launch magick for {name}"))?;
+
+    svg_stdin
+        .write_all(svg_bytes)
+        .with_context(|| format!("failed to feed SVG data for {name}"))?;
+    drop(svg_stdin);
+
+    let status = svg
+        .wait()
+        .with_context(|| format!("failed to wait for rsvg-convert for {name}"))?;
+    let output = magick
+        .wait_with_output()
+        .with_context(|| format!("failed to wait for magick for {name}"))?;
+
+    ensure!(
+        status.success() && output.status.success(),
+        "disk SVG rasterization failed for {name}"
+    );
+
+    let expected = RASTER_SIZE as usize * RASTER_SIZE as usize * 4;
+    ensure!(
+        output.stdout.len() == expected,
+        "disk SVG rasterizer returned {} bytes for {RASTER_SIZE}x{RASTER_SIZE}, expected {expected}: {name}",
+        output.stdout.len()
+    );
+
+    crop_transparent_margin(name, &output.stdout, RASTER_SIZE, RASTER_SIZE)
+}
+
+fn crop_transparent_margin(name: &str, pixels: &[u8], width: i32, height: i32) -> Result<DiskIcon> {
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = -1;
+    let mut max_y = -1;
+
+    for y in 0..height {
+        for x in 0..width {
+            let offset = ((y * width + x) * 4) as usize;
+            if pixels[offset + 3] == 0 {
+                continue;
+            }
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    ensure!(
+        max_x >= min_x && max_y >= min_y,
+        "disk SVG has no visible pixels: {name}"
+    );
+
+    let cropped_width = max_x - min_x + 1;
+    let cropped_height = max_y - min_y + 1;
+    let mut cropped = Vec::with_capacity(cropped_width as usize * cropped_height as usize * 4);
+
+    for y in min_y..=max_y {
+        let start = ((y * width + min_x) * 4) as usize;
+        let end = start + cropped_width as usize * 4;
+        cropped.extend_from_slice(&pixels[start..end]);
+    }
+
+    Ok(DiskIcon {
+        pixels: Arc::from(cropped),
+        width: cropped_width,
+        height: cropped_height,
+    })
+}
+
 fn default_interval_ms() -> u64 {
     5_000
+}
+
+fn default_icon_scale() -> f32 {
+    0.8
+}
+
+fn default_icon_gap() -> i32 {
+    4
 }
 
 fn default_bar_width() -> i32 {

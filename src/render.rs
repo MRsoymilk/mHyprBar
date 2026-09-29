@@ -1728,7 +1728,7 @@ impl Renderer {
                 }
                 #[cfg(mhypr_module = "disk")]
                 ModuleVisual::Disk(disk) => {
-                    self.draw_disk(canvas, width, height, rect, &view, disk);
+                    self.draw_disk(canvas, width, height, rect, &view, disk)?;
                 }
                 #[cfg(mhypr_module = "memory")]
                 ModuleVisual::Memory(memory) => {
@@ -2317,13 +2317,36 @@ impl Renderer {
         rect: Rect,
         view: &ModuleView<'_>,
         disk: &crate::modules::disk::DiskVisual,
-    ) {
+    ) -> Result<()> {
         let padding_x = view.style.padding_x.max(0);
         let padding_y = view.style.padding_y.max(0);
         let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+        let icon_size = disk_icon_slot_size(disk, view.style, rect.h);
+        let icon_x = rect.x.saturating_add(padding_x);
+        let icon_y = rect
+            .y
+            .saturating_add(padding_y)
+            .saturating_add((content_h - icon_size) / 2);
+        let icon_color = view.style.foreground_rgba()?;
+
+        draw_tinted_rgba_mask(
+            canvas,
+            width,
+            height,
+            icon_x,
+            icon_y,
+            icon_size,
+            disk.icon_width,
+            disk.icon_height,
+            &disk.icon_pixels,
+            icon_color,
+        );
+
         let bar_h = disk.bar_height.min(content_h).max(1);
         let bar = Rect {
-            x: rect.x.saturating_add(padding_x),
+            x: icon_x
+                .saturating_add(icon_size)
+                .saturating_add(disk.icon_gap),
             y: rect
                 .y
                 .saturating_add(padding_y)
@@ -2364,6 +2387,8 @@ impl Renderer {
             disk.bar_border,
             disk.bar_border_width,
         );
+
+        Ok(())
     }
 
     #[cfg(mhypr_module = "memory")]
@@ -2716,6 +2741,18 @@ fn layout_icon_slot_size(
     ((available as f32 * layout.icon_scale).round() as i32).clamp(1, available)
 }
 
+#[cfg(mhypr_module = "disk")]
+fn disk_icon_slot_size(
+    disk: &crate::modules::disk::DiskVisual,
+    style: &ModuleStyle,
+    bar_height: i32,
+) -> i32 {
+    let available = bar_height
+        .saturating_sub(style.padding_y.max(0).saturating_mul(2))
+        .max(1);
+    ((available as f32 * disk.icon_scale).round() as i32).clamp(1, available)
+}
+
 fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     if let Some(width) = view.width_override {
         return width.max(0);
@@ -2827,12 +2864,13 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     #[cfg(mhypr_module = "disk")]
     if let ModuleVisual::Disk(disk) = &view.visual {
         let style = view.style;
+        let icon_slot = disk_icon_slot_size(disk, style, bar_height);
+        let content = icon_slot
+            .saturating_add(disk.icon_gap)
+            .saturating_add(disk.bar_width);
         return style
             .min_width
-            .max(
-                disk.bar_width
-                    .saturating_add(style.padding_x.saturating_mul(2)),
-            )
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
             .max(1);
     }
 
@@ -2966,6 +3004,7 @@ fn lerp_rgba(from: [u8; 4], to: [u8; 4], t: f32) -> [u8; 4] {
 #[cfg(any(
     mhypr_module = "audio",
     mhypr_module = "brightness",
+    mhypr_module = "disk",
     mhypr_module = "layout"
 ))]
 #[allow(clippy::too_many_arguments)]
