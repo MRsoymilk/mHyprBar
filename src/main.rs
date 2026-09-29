@@ -16,6 +16,8 @@ mod ipc;
 #[cfg(mhypr_module = "memory")]
 mod memory_popup;
 mod modules;
+#[cfg(mhypr_module = "monitor")]
+mod monitor_popup;
 mod render;
 mod tray;
 #[cfg(mhypr_module = "tray")]

@@ -703,6 +703,196 @@ impl Renderer {
         Ok(())
     }
 
+    #[cfg(mhypr_module = "monitor")]
+    pub fn draw_monitor_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::monitor_popup::MonitorPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let selected_background = cfg.selected_background_rgba()?;
+
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let pad = cfg.padding;
+        let content_x = panel.x + pad;
+        let content_w = (panel.w - pad * 2).max(1);
+        let mut y = panel.y + pad;
+
+        let mut title_style = cfg.style.clone();
+        title_style.font_size = (cfg.style.font_size + 1.0).max(cfg.style.font_size);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: cfg.title_height,
+            },
+            &format!("Displays · {}", model.monitors.len()),
+            &title_style,
+            0,
+            0,
+        )?;
+        y += cfg.title_height;
+
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: 1,
+            },
+            separator,
+        );
+        y += 1;
+
+        let mut detail_style = cfg.style.clone();
+        detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
+
+        if model.monitors.is_empty() {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x,
+                    y,
+                    w: content_w,
+                    h: cfg.row_height,
+                },
+                "No active monitors",
+                &cfg.style,
+                0,
+                0,
+            )?;
+            y += cfg.row_height;
+        } else {
+            for (index, monitor) in model.monitors.iter().enumerate() {
+                let row = Rect {
+                    x: content_x,
+                    y,
+                    w: content_w,
+                    h: cfg.row_height,
+                };
+                if index == model.selected || model.hovered_row == Some(index) {
+                    fill_rect(canvas, width, height, row, selected_background);
+                }
+
+                let primary = crate::monitor_popup::MonitorPopupModel::primary_text(monitor);
+                let detail = crate::monitor_popup::MonitorPopupModel::detail_text(monitor);
+                let top_h = (cfg.row_height / 2).max(1);
+                self.draw_text_content(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: row.x + 6,
+                        y: row.y,
+                        w: (row.w - 12).max(1),
+                        h: top_h,
+                    },
+                    &primary,
+                    &cfg.style,
+                    0,
+                    0,
+                )?;
+                self.draw_text_content(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: row.x + 6,
+                        y: row.y + top_h,
+                        w: (row.w - 12).max(1),
+                        h: (row.h - top_h).max(1),
+                    },
+                    &detail,
+                    &detail_style,
+                    0,
+                    0,
+                )?;
+                y += cfg.row_height;
+            }
+        }
+
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: 1,
+            },
+            separator,
+        );
+        y += 1;
+
+        for (labels, columns) in [
+            (["Focus", "Scale -", "Scale +", ""], 3_i32),
+            (["Left", "Up", "Down", "Right"], 4_i32),
+            (["Mode -", "Mode +", "", ""], 2_i32),
+        ] {
+            let cell_w = (content_w / columns).max(1);
+            for column in 0..columns {
+                let rect = Rect {
+                    x: content_x + column * cell_w,
+                    y,
+                    w: if column + 1 == columns {
+                        content_w - column * cell_w
+                    } else {
+                        cell_w
+                    },
+                    h: cfg.control_height,
+                };
+                draw_rect_border(canvas, width, height, rect, separator, 1);
+                let label = labels[column as usize];
+                let text_w = estimate_text_width(label, &cfg.style).min(rect.w).max(1);
+                self.draw_text_content(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: rect.x + (rect.w - text_w).max(0) / 2,
+                        y: rect.y,
+                        w: text_w,
+                        h: rect.h,
+                    },
+                    label,
+                    &cfg.style,
+                    0,
+                    0,
+                )?;
+            }
+            y += cfg.control_height;
+        }
+
+        Ok(())
+    }
+
     #[cfg(mhypr_module = "gpu")]
     pub fn draw_gpu_popup(
         &mut self,
@@ -2020,6 +2210,10 @@ impl Renderer {
                 ModuleVisual::Gpu(gpu) => {
                     self.draw_gpu(canvas, width, height, rect, &view, gpu)?;
                 }
+                #[cfg(mhypr_module = "monitor")]
+                ModuleVisual::Monitor(monitor) => {
+                    self.draw_monitor(canvas, width, height, rect, &view, monitor)?;
+                }
                 #[cfg(mhypr_module = "memory")]
                 ModuleVisual::Memory(memory) => {
                     self.draw_memory(canvas, width, height, rect, &view, memory)?;
@@ -2805,6 +2999,74 @@ impl Renderer {
         Ok(())
     }
 
+    #[cfg(mhypr_module = "monitor")]
+    fn draw_monitor(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        monitor: &crate::modules::monitor::MonitorVisual,
+    ) -> Result<()> {
+        let style = view.style;
+        let padding_x = style.padding_x.max(0);
+        let padding_y = style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+        let icon_size = monitor_icon_slot_size(monitor, style, rect.h);
+        let icon_x = rect.x.saturating_add(padding_x);
+        let icon_y = rect
+            .y
+            .saturating_add(padding_y)
+            .saturating_add((content_h - icon_size) / 2);
+        draw_tinted_rgba_mask(
+            canvas,
+            width,
+            height,
+            icon_x,
+            icon_y,
+            icon_size,
+            monitor.icon_width,
+            monitor.icon_height,
+            &monitor.icon_pixels,
+            style.foreground_rgba()?,
+        );
+
+        let topo_x = icon_x
+            .saturating_add(icon_size)
+            .saturating_add(monitor.icon_gap);
+        let topo_y = rect
+            .y
+            .saturating_add((rect.h - monitor.topology_height).max(0) / 2);
+        let inset = (monitor.dot_size / 2).max(1);
+        let usable_w = (monitor.topology_width - inset * 2).max(1);
+        let usable_h = (monitor.topology_height - inset * 2).max(1);
+
+        for dot in &monitor.dots {
+            let cx = topo_x
+                .saturating_add(inset)
+                .saturating_add((dot.x * usable_w as f32).round() as i32);
+            let cy = topo_y
+                .saturating_add(inset)
+                .saturating_add((dot.y * usable_h as f32).round() as i32);
+            fill_circle(
+                canvas,
+                width,
+                height,
+                cx,
+                cy,
+                monitor.dot_size,
+                if dot.focused {
+                    monitor.focused_dot_color
+                } else {
+                    monitor.dot_color
+                },
+            );
+        }
+
+        Ok(())
+    }
+
     #[cfg(mhypr_module = "memory")]
     fn draw_memory(
         &mut self,
@@ -3206,6 +3468,18 @@ fn gpu_icon_dimensions(
     (draw_w, draw_h)
 }
 
+#[cfg(mhypr_module = "monitor")]
+fn monitor_icon_slot_size(
+    monitor: &crate::modules::monitor::MonitorVisual,
+    style: &ModuleStyle,
+    bar_height: i32,
+) -> i32 {
+    let available = bar_height
+        .saturating_sub(style.padding_y.max(0).saturating_mul(2))
+        .max(1);
+    ((available as f32 * monitor.icon_scale).round() as i32).clamp(1, available)
+}
+
 #[cfg(mhypr_module = "memory")]
 fn memory_icon_slot_size(
     memory: &crate::modules::memory::MemoryVisual,
@@ -3341,6 +3615,19 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
             .saturating_add(gpu.bar_width)
             .saturating_add(gpu.text_gap)
             .saturating_add(percent_width);
+        return style
+            .min_width
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    if let ModuleVisual::Monitor(monitor) = &view.visual {
+        let style = view.style;
+        let icon_slot = monitor_icon_slot_size(monitor, style, bar_height);
+        let content = icon_slot
+            .saturating_add(monitor.icon_gap)
+            .saturating_add(monitor.topology_width);
         return style
             .min_width
             .max(content.saturating_add(style.padding_x.saturating_mul(2)))
@@ -3494,7 +3781,8 @@ fn lerp_rgba(from: [u8; 4], to: [u8; 4], t: f32) -> [u8; 4] {
     mhypr_module = "disk",
     mhypr_module = "gpu",
     mhypr_module = "layout",
-    mhypr_module = "memory"
+    mhypr_module = "memory",
+    mhypr_module = "monitor"
 ))]
 #[allow(clippy::too_many_arguments)]
 fn draw_tinted_rgba_mask(
@@ -3806,6 +4094,42 @@ fn draw_popup_separator(
         },
         color,
     );
+}
+
+#[cfg(mhypr_module = "monitor")]
+fn fill_circle(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    cx: i32,
+    cy: i32,
+    diameter: i32,
+    rgba: [u8; 4],
+) {
+    let diameter = diameter.max(1);
+    let radius = diameter as f32 / 2.0;
+    let start_x = cx - diameter / 2;
+    let start_y = cy - diameter / 2;
+    for y in 0..diameter {
+        for x in 0..diameter {
+            let dx = x as f32 + 0.5 - radius;
+            let dy = y as f32 + 0.5 - radius;
+            if dx * dx + dy * dy <= radius * radius {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: start_x + x,
+                        y: start_y + y,
+                        w: 1,
+                        h: 1,
+                    },
+                    rgba,
+                );
+            }
+        }
+    }
 }
 
 fn fill_rect(canvas: &mut [u8], width: u32, height: u32, rect: Rect, rgba: [u8; 4]) {

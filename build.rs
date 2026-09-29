@@ -7,6 +7,7 @@ const KNOWN_MODULES: &[&str] = &[
     "layout",
     "cpu",
     "gpu",
+    "monitor",
     "memory",
     "network",
     "audio",
