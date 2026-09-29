@@ -30,6 +30,8 @@ pub struct MonitorPopupConfig {
     pub separator: String,
     #[serde(default = "default_selected_background")]
     pub selected_background: String,
+    #[serde(default = "default_hover_background")]
+    pub hover_background: String,
     #[serde(default = "default_popup_style")]
     pub style: ModuleStyle,
 }
@@ -53,6 +55,7 @@ impl Default for MonitorPopupConfig {
             border: default_border(),
             separator: default_separator(),
             selected_background: default_selected_background(),
+            hover_background: default_hover_background(),
             style: default_popup_style(),
         }
     }
@@ -92,6 +95,7 @@ impl MonitorPopupConfig {
         let _ = self.border_rgba()?;
         let _ = self.separator_rgba()?;
         let _ = self.selected_background_rgba()?;
+        let _ = self.hover_background_rgba()?;
         Ok(())
     }
 
@@ -110,6 +114,10 @@ impl MonitorPopupConfig {
     pub fn selected_background_rgba(&self) -> Result<[u8; 4]> {
         config::parse_rgba(&self.selected_background)
     }
+
+    pub fn hover_background_rgba(&self) -> Result<[u8; 4]> {
+        config::parse_rgba(&self.hover_background)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,11 +134,28 @@ pub enum MonitorPopupAction {
     ModeNext,
 }
 
+pub fn context_action(index: usize) -> Option<MonitorPopupAction> {
+    [
+        MonitorPopupAction::Focus,
+        MonitorPopupAction::ScaleDown,
+        MonitorPopupAction::ScaleUp,
+        MonitorPopupAction::AutoLeft,
+        MonitorPopupAction::AutoUp,
+        MonitorPopupAction::AutoDown,
+        MonitorPopupAction::AutoRight,
+        MonitorPopupAction::ModePrevious,
+        MonitorPopupAction::ModeNext,
+    ]
+    .get(index)
+    .copied()
+}
+
 pub struct MonitorPopupModel {
     pub config: MonitorPopupConfig,
     pub monitors: Vec<MonitorInfo>,
     pub selected: usize,
     pub hovered_row: Option<usize>,
+    pub context_row: Option<usize>,
 }
 
 impl MonitorPopupModel {
@@ -147,6 +172,7 @@ impl MonitorPopupModel {
             monitors,
             selected,
             hovered_row: None,
+            context_row: None,
         })
     }
 
@@ -166,12 +192,18 @@ impl MonitorPopupModel {
             .or_else(|| self.monitors.iter().position(|monitor| monitor.focused))
             .unwrap_or(0)
             .min(self.monitors.len().saturating_sub(1));
-        self.hovered_row = None;
+        if self
+            .context_row
+            .is_some_and(|index| index >= self.monitors.len())
+        {
+            self.context_row = None;
+        }
         Ok(())
     }
 
     pub fn panel_height(&self) -> i32 {
-        self.config
+        let base = self
+            .config
             .padding
             .saturating_mul(2)
             .saturating_add(self.config.title_height)
@@ -180,9 +212,8 @@ impl MonitorPopupModel {
                 self.config
                     .row_height
                     .saturating_mul(self.monitors.len().max(1) as i32),
-            )
-            .saturating_add(1)
-            .saturating_add(self.config.control_height.saturating_mul(3))
+            );
+        base
     }
 
     pub fn selected_monitor(&self) -> Option<&MonitorInfo> {
@@ -198,11 +229,29 @@ impl MonitorPopupModel {
         (index < self.monitors.len()).then_some(index)
     }
 
+    pub fn open_context_at(&mut self, local_y: f64) -> bool {
+        let Some(index) = self.row_at(local_y) else {
+            self.context_row = None;
+            return false;
+        };
+        self.selected = index;
+        self.context_row = Some(index);
+        true
+    }
+
     pub fn action_at(&self, local_x: f64, local_y: f64) -> Option<MonitorPopupAction> {
         if let Some(index) = self.row_at(local_y) {
             return Some(MonitorPopupAction::Select(index));
         }
+        self.context_action_at(local_x, local_y)
+    }
 
+    pub fn context_action_at(
+        &self,
+        local_x: f64,
+        local_y: f64,
+    ) -> Option<MonitorPopupAction> {
+        self.context_row?;
         let controls_y = self
             .config
             .padding
@@ -214,41 +263,27 @@ impl MonitorPopupModel {
                     .saturating_mul(self.monitors.len().max(1) as i32),
             )
             .saturating_add(1);
-        let local_x = local_x - self.config.padding as f64;
-        let content_w = (self.config.width - self.config.padding * 2).max(1) as f64;
-
-        if local_y >= controls_y as f64
-            && local_y < (controls_y + self.config.control_height) as f64
+        if local_x < self.config.padding as f64
+            || local_x >= (self.config.width - self.config.padding) as f64
+            || local_y < controls_y as f64
         {
-            let cell = content_w / 3.0;
-            return Some(match (local_x / cell).floor() as i32 {
-                0 => MonitorPopupAction::Focus,
-                1 => MonitorPopupAction::ScaleDown,
-                _ => MonitorPopupAction::ScaleUp,
-            });
+            return None;
         }
-
-        let second_y = controls_y + self.config.control_height;
-        if local_y >= second_y as f64 && local_y < (second_y + self.config.control_height) as f64 {
-            let cell = content_w / 4.0;
-            return Some(match (local_x / cell).floor() as i32 {
-                0 => MonitorPopupAction::AutoLeft,
-                1 => MonitorPopupAction::AutoUp,
-                2 => MonitorPopupAction::AutoDown,
-                _ => MonitorPopupAction::AutoRight,
-            });
-        }
-
-        let third_y = second_y + self.config.control_height;
-        if local_y >= third_y as f64 && local_y < (third_y + self.config.control_height) as f64 {
-            let cell = content_w / 2.0;
-            return Some(if local_x < cell {
-                MonitorPopupAction::ModePrevious
-            } else {
-                MonitorPopupAction::ModeNext
-            });
-        }
-        None
+        let index =
+            ((local_y - controls_y as f64) / self.config.control_height as f64) as usize;
+        [
+            MonitorPopupAction::Focus,
+            MonitorPopupAction::ScaleDown,
+            MonitorPopupAction::ScaleUp,
+            MonitorPopupAction::AutoLeft,
+            MonitorPopupAction::AutoUp,
+            MonitorPopupAction::AutoDown,
+            MonitorPopupAction::AutoRight,
+            MonitorPopupAction::ModePrevious,
+            MonitorPopupAction::ModeNext,
+        ]
+        .get(index)
+        .copied()
     }
 
     pub fn apply_action(&mut self, action: MonitorPopupAction) -> Result<()> {
@@ -425,7 +460,7 @@ fn default_row_height() -> i32 {
     48
 }
 fn default_control_height() -> i32 {
-    34
+    26
 }
 fn default_refresh_ms() -> u64 {
     1000
@@ -437,7 +472,10 @@ fn default_separator() -> String {
     "#353A42".into()
 }
 fn default_selected_background() -> String {
-    "#30343A".into()
+    "#203728".into()
+}
+fn default_hover_background() -> String {
+    "#3A4048".into()
 }
 
 fn default_popup_style() -> ModuleStyle {
@@ -507,19 +545,23 @@ mod tests {
             monitors: Vec::new(),
             selected: 0,
             hovered_row: None,
+            context_row: Some(0),
         };
         let controls_y =
             model.config.padding + model.config.title_height + 1 + model.config.row_height + 1;
+        let x = model.config.padding as f64 + 10.0;
+        let row_h = model.config.control_height as f64;
         assert_eq!(
-            model.action_at(model.config.padding as f64 + 10.0, controls_y as f64 + 5.0),
+            model.context_action_at(x, controls_y as f64 + 5.0),
             Some(MonitorPopupAction::Focus)
         );
         assert_eq!(
-            model.action_at(
-                model.config.width as f64 - model.config.padding as f64 - 5.0,
-                (controls_y + model.config.control_height) as f64 + 5.0
-            ),
+            model.context_action_at(x, controls_y as f64 + row_h * 6.5),
             Some(MonitorPopupAction::AutoRight)
+        );
+        assert_eq!(
+            model.context_action_at(x, controls_y as f64 + row_h * 8.5),
+            Some(MonitorPopupAction::ModeNext)
         );
     }
 }

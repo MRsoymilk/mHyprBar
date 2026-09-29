@@ -302,7 +302,7 @@ fn default_dot_color() -> String {
     "#A0A0A0".into()
 }
 fn default_focused_dot_color() -> String {
-    "#F2F2F2".into()
+    "#7CFC8A".into()
 }
 
 #[cfg(test)]
