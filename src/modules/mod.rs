@@ -78,6 +78,10 @@ pub(super) trait StatusModule {
     fn scroll(&mut self, _direction: i32) -> Result<bool> {
         Ok(false)
     }
+    #[cfg(mhypr_module = "gpu")]
+    fn gpu_processes(&mut self, _limit: usize) -> Result<Vec<crate::gpu::GpuProcess>> {
+        Ok(Vec::new())
+    }
 }
 
 struct RuntimeModule {
@@ -266,6 +270,18 @@ impl ModuleManager {
             module.refresh_now(Instant::now());
         }
         Ok(handled)
+    }
+
+    #[cfg(mhypr_module = "gpu")]
+    pub fn gpu_processes(&mut self, limit: usize) -> Result<Vec<crate::gpu::GpuProcess>> {
+        let Some(module) = self
+            .modules
+            .iter_mut()
+            .find(|module| module.module.name() == "gpu")
+        else {
+            return Ok(Vec::new());
+        };
+        module.module.gpu_processes(limit)
     }
 
     pub fn view(&self, name: &str) -> Option<ModuleView<'_>> {

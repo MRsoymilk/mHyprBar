@@ -45,7 +45,7 @@ use crate::cpu_popup::CpuPopupModel;
 #[cfg(mhypr_module = "disk")]
 use crate::disk_popup::DiskPopupModel;
 #[cfg(mhypr_module = "gpu")]
-use crate::gpu_popup::GpuPopupModel;
+use crate::gpu_popup::{GpuPopupConfig, GpuPopupModel};
 #[cfg(mhypr_module = "memory")]
 use crate::memory_popup::MemoryPopupModel;
 use crate::{
@@ -1722,12 +1722,30 @@ impl App {
             return;
         }
 
+        let limit = self
+            .gpu_popup
+            .as_ref()
+            .map(|popup| popup.model.config.max_processes)
+            .unwrap_or(8);
+        let fallback_processes = self
+            .gpu_popup
+            .as_ref()
+            .map(|popup| popup.model.processes.clone())
+            .unwrap_or_default();
+
         let bar_changed = self.modules.force_refresh("gpu");
+        let processes = match self.modules.gpu_processes(limit) {
+            Ok(processes) => processes,
+            Err(error) => {
+                eprintln!("mhyprbar: GPU process refresh failed: {error:#}");
+                fallback_processes
+            }
+        };
         let Some(visual) = self.current_gpu_visual() else {
             return;
         };
         if let Some(popup) = self.gpu_popup.as_mut() {
-            popup.model.update(&visual);
+            popup.model.update(&visual, processes);
             popup.next_refresh = now + popup.model.config.refresh_interval();
         }
         if bar_changed {
@@ -1753,14 +1771,23 @@ impl App {
             return Ok(true);
         }
 
+        let popup_config = GpuPopupConfig::load()?;
+        if !popup_config.enabled {
+            return Ok(false);
+        }
+
         let bar_changed = self.modules.force_refresh("gpu");
+        let processes = match self.modules.gpu_processes(popup_config.max_processes) {
+            Ok(processes) => processes,
+            Err(error) => {
+                eprintln!("mhyprbar: GPU process read failed: {error:#}");
+                Vec::new()
+            }
+        };
         let visual = self
             .current_gpu_visual()
             .context("GPU module visual is unavailable")?;
-        let model = GpuPopupModel::new(&visual)?;
-        if !model.config.enabled {
-            return Ok(false);
-        }
+        let model = GpuPopupModel::new(popup_config, &visual, processes);
         if bar_changed {
             self.draw_all();
         }

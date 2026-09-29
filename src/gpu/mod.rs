@@ -25,6 +25,16 @@ impl GpuVendor {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct GpuProcess {
+    pub pid: u32,
+    pub kind: String,
+    pub gpu_percent: Option<f32>,
+    pub memory_percent: Option<f32>,
+    pub memory_bytes: Option<u64>,
+    pub name: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct GpuStats {
     pub vendor: GpuVendor,
@@ -50,6 +60,9 @@ impl GpuStats {
 pub trait GpuBackend {
     fn backend_name(&self) -> &'static str;
     fn sample(&mut self) -> Result<GpuStats>;
+    fn processes(&mut self, _limit: usize) -> Result<Vec<GpuProcess>> {
+        Ok(Vec::new())
+    }
 }
 
 pub fn create_backend(kind: &str, device: &str) -> Result<Box<dyn GpuBackend>> {

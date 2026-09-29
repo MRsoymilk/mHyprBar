@@ -2,7 +2,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
 
-use super::{GpuBackend, GpuStats, GpuVendor};
+use super::{GpuBackend, GpuProcess, GpuStats, GpuVendor};
 
 pub struct NvidiaSmiBackend {
     index: String,
@@ -71,6 +71,75 @@ impl GpuBackend for NvidiaSmiBackend {
             .context("nvidia-smi returned no GPU data")?;
         parse_sample(line)
     }
+
+    fn processes(&mut self, limit: usize) -> Result<Vec<GpuProcess>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let output = Command::new("nvidia-smi")
+            .arg("pmon")
+            .arg("-c")
+            .arg("1")
+            .arg("-s")
+            .arg("um")
+            .output()
+            .context("failed to launch nvidia-smi pmon")?;
+        ensure!(
+            output.status.success(),
+            "nvidia-smi pmon failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut rows = stdout
+            .lines()
+            .filter_map(|line| parse_pmon_process(line, &self.index))
+            .collect::<Vec<_>>();
+
+        rows.sort_by(|a, b| {
+            b.gpu_percent
+                .unwrap_or(-1.0)
+                .total_cmp(&a.gpu_percent.unwrap_or(-1.0))
+                .then_with(|| {
+                    b.memory_percent
+                        .unwrap_or(-1.0)
+                        .total_cmp(&a.memory_percent.unwrap_or(-1.0))
+                })
+                .then_with(|| b.memory_bytes.cmp(&a.memory_bytes))
+                .then_with(|| a.pid.cmp(&b.pid))
+        });
+        rows.truncate(limit);
+        Ok(rows)
+    }
+}
+
+fn parse_pmon_process(line: &str, gpu_index: &str) -> Option<GpuProcess> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 12 || fields[0] != gpu_index {
+        return None;
+    }
+
+    let pid = fields[1].parse::<u32>().ok()?;
+    let kind = fields[2].to_owned();
+    let gpu_percent = parse_optional_f32(fields[3]);
+    let memory_percent = parse_optional_f32(fields[4]);
+    let memory_bytes = parse_optional_f64(fields[9]).map(mib_to_bytes);
+    let name = fields[11..].join(" ");
+
+    Some(GpuProcess {
+        pid,
+        kind,
+        gpu_percent,
+        memory_percent,
+        memory_bytes,
+        name,
+    })
 }
 
 fn parse_sample(line: &str) -> Result<GpuStats> {
@@ -119,7 +188,19 @@ fn mib_to_bytes(value: f64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_sample;
+    use super::{parse_pmon_process, parse_sample};
+
+    #[test]
+    fn parses_pmon_graphics_process() {
+        let process =
+            parse_pmon_process("0 2200 G 11 6 - - - - 1 0 Hyprland", "0").expect("pmon process");
+        assert_eq!(process.pid, 2200);
+        assert_eq!(process.kind, "G");
+        assert_eq!(process.gpu_percent, Some(11.0));
+        assert_eq!(process.memory_percent, Some(6.0));
+        assert_eq!(process.memory_bytes, Some(1024 * 1024));
+        assert_eq!(process.name, "Hyprland");
+    }
 
     #[test]
     fn parses_nvidia_smi_csv() {

@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::{
     config::{self, ModuleStyle},
+    gpu::GpuProcess,
     modules::gpu::GpuVisual,
 };
 
@@ -22,6 +23,8 @@ pub struct GpuPopupConfig {
     pub row_height: i32,
     #[serde(default = "default_refresh_ms")]
     pub refresh_ms: u64,
+    #[serde(default = "default_max_processes")]
+    pub max_processes: usize,
     #[serde(default = "default_bar_width")]
     pub bar_width: i32,
     #[serde(default = "default_bar_background")]
@@ -53,6 +56,7 @@ impl Default for GpuPopupConfig {
             title_height: default_title_height(),
             row_height: default_row_height(),
             refresh_ms: default_refresh_ms(),
+            max_processes: default_max_processes(),
             bar_width: default_bar_width(),
             bar_background: default_bar_background(),
             utilization_fill: default_utilization_fill(),
@@ -86,6 +90,10 @@ impl GpuPopupConfig {
         ensure!(
             self.refresh_ms > 0,
             "gpu popup refresh_ms must be greater than zero"
+        );
+        ensure!(
+            self.max_processes > 0,
+            "gpu popup max_processes must be greater than zero"
         );
         ensure!(
             self.bar_width > 0,
@@ -157,27 +165,34 @@ impl From<&GpuVisual> for GpuPopupSnapshot {
 pub struct GpuPopupModel {
     pub config: GpuPopupConfig,
     pub snapshot: GpuPopupSnapshot,
+    pub processes: Vec<GpuProcess>,
 }
 
 impl GpuPopupModel {
-    pub fn new(visual: &GpuVisual) -> Result<Self> {
-        Ok(Self {
-            config: GpuPopupConfig::load()?,
+    pub fn new(config: GpuPopupConfig, visual: &GpuVisual, processes: Vec<GpuProcess>) -> Self {
+        Self {
+            config,
             snapshot: visual.into(),
-        })
+            processes,
+        }
     }
 
-    pub fn update(&mut self, visual: &GpuVisual) {
+    pub fn update(&mut self, visual: &GpuVisual, processes: Vec<GpuProcess>) {
         self.snapshot = visual.into();
+        self.processes = processes;
     }
 
     pub fn panel_height(&self) -> i32 {
+        let process_rows = self.processes.len().max(1) as i32;
         self.config
             .padding
             .saturating_mul(2)
             .saturating_add(self.config.title_height)
             .saturating_add(1)
             .saturating_add(self.config.row_height.saturating_mul(5))
+            .saturating_add(1)
+            .saturating_add(self.config.row_height)
+            .saturating_add(self.config.row_height.saturating_mul(process_rows))
     }
 
     pub fn backend_text(&self) -> String {
@@ -218,6 +233,21 @@ impl GpuPopupModel {
             .map(|value| format!("{value:.1} W"))
             .unwrap_or_else(|| "--".into())
     }
+
+    pub fn process_gpu_text(process: &GpuProcess) -> String {
+        format_percent(process.gpu_percent)
+    }
+
+    pub fn process_memory_percent_text(process: &GpuProcess) -> String {
+        format_percent(process.memory_percent)
+    }
+
+    pub fn process_memory_text(process: &GpuProcess) -> String {
+        process
+            .memory_bytes
+            .map(format_bytes)
+            .unwrap_or_else(|| "--".into())
+    }
 }
 
 fn format_percent(value: Option<f32>) -> String {
@@ -242,7 +272,7 @@ fn default_enabled() -> bool {
 }
 
 fn default_width() -> i32 {
-    400
+    560
 }
 
 fn default_padding() -> i32 {
@@ -259,6 +289,10 @@ fn default_row_height() -> i32 {
 
 fn default_refresh_ms() -> u64 {
     1_000
+}
+
+fn default_max_processes() -> usize {
+    8
 }
 
 fn default_bar_width() -> i32 {
@@ -328,6 +362,7 @@ mod tests {
         let model = GpuPopupModel {
             config: Default::default(),
             snapshot: (&visual()).into(),
+            processes: Vec::new(),
         };
         assert_eq!(model.backend_text(), "NVIDIA · nvidia-smi");
         assert_eq!(model.utilization_text(), "25%");

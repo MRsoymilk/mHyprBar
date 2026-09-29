@@ -126,6 +126,10 @@ impl StatusModule for GpuModule {
         self.revision
     }
 
+    fn gpu_processes(&mut self, limit: usize) -> Result<Vec<crate::gpu::GpuProcess>> {
+        self.backend.processes(limit)
+    }
+
     fn visual(&self) -> ModuleVisual {
         ModuleVisual::Gpu(GpuVisual {
             backend_name: self.backend.backend_name().to_owned(),

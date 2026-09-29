@@ -876,6 +876,116 @@ impl Renderer {
             y = y.saturating_add(cfg.row_height);
         }
 
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: panel.x + pad,
+                y,
+                w: (panel.w - pad * 2).max(0),
+                h: 1,
+            },
+            separator,
+        );
+        y = y.saturating_add(1);
+
+        let content_x = panel.x + pad;
+        let content_w = (panel.w - pad * 2).max(1);
+        let pid_w = 58;
+        let type_w = 48;
+        let gpu_w = 50;
+        let mem_w = 50;
+        let vram_w = 76;
+        let process_w = (content_w - pid_w - type_w - gpu_w - mem_w - vram_w).max(1);
+
+        let header_cells = [
+            ("PID", pid_w),
+            ("Type", type_w),
+            ("GPU", gpu_w),
+            ("MEM", mem_w),
+            ("VRAM", vram_w),
+            ("Process", process_w),
+        ];
+        let mut x = content_x;
+        for (label, cell_w) in header_cells {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x,
+                    y,
+                    w: cell_w,
+                    h: cfg.row_height,
+                },
+                label,
+                &cfg.style,
+                0,
+                0,
+            )?;
+            x = x.saturating_add(cell_w);
+        }
+        y = y.saturating_add(cfg.row_height);
+
+        if model.processes.is_empty() {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x,
+                    y,
+                    w: content_w,
+                    h: cfg.row_height,
+                },
+                "No GPU processes",
+                &cfg.style,
+                0,
+                0,
+            )?;
+        } else {
+            for process in &model.processes {
+                let values = [
+                    (process.pid.to_string(), pid_w),
+                    (process.kind.clone(), type_w),
+                    (
+                        crate::gpu_popup::GpuPopupModel::process_gpu_text(process),
+                        gpu_w,
+                    ),
+                    (
+                        crate::gpu_popup::GpuPopupModel::process_memory_percent_text(process),
+                        mem_w,
+                    ),
+                    (
+                        crate::gpu_popup::GpuPopupModel::process_memory_text(process),
+                        vram_w,
+                    ),
+                    (process.name.clone(), process_w),
+                ];
+                let mut x = content_x;
+                for (value, cell_w) in values {
+                    self.draw_text_content(
+                        canvas,
+                        width,
+                        height,
+                        Rect {
+                            x,
+                            y,
+                            w: cell_w,
+                            h: cfg.row_height,
+                        },
+                        &value,
+                        &cfg.style,
+                        0,
+                        0,
+                    )?;
+                    x = x.saturating_add(cell_w);
+                }
+                y = y.saturating_add(cfg.row_height);
+            }
+        }
+
         Ok(())
     }
 
