@@ -2697,17 +2697,36 @@ impl Renderer {
         let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(2);
         let gap = gpu.row_gap.min(content_h.saturating_sub(2)).max(0);
         let row_h = ((content_h - gap) / 2).max(1);
-        let label_w = estimate_text_width("M", style).max(1);
         let percent_w = estimate_text_width("100%", style).max(1);
         let start_x = rect.x.saturating_add(padding_x);
-        let bar_x = start_x.saturating_add(label_w).saturating_add(gpu.text_gap);
+        let (icon_w, _icon_h) = gpu_icon_dimensions(gpu, style, rect.h);
+        let icon_y = rect
+            .y
+            .saturating_add(padding_y)
+            .saturating_add((content_h - icon_w) / 2);
+        let icon_color = style.foreground_rgba()?;
+
+        draw_tinted_rgba_mask(
+            canvas,
+            width,
+            height,
+            start_x,
+            icon_y,
+            icon_w,
+            gpu.icon_width,
+            gpu.icon_height,
+            &gpu.icon_pixels,
+            icon_color,
+        );
+
+        let bar_x = start_x.saturating_add(icon_w).saturating_add(gpu.icon_gap);
         let percent_x = bar_x
             .saturating_add(gpu.bar_width)
             .saturating_add(gpu.text_gap);
 
-        for (index, (label, percent, fill)) in [
-            ("G", gpu.utilization_percent, gpu.utilization_fill),
-            ("M", gpu.memory_percent, gpu.memory_fill),
+        for (index, (percent, fill)) in [
+            (gpu.utilization_percent, gpu.utilization_fill),
+            (gpu.memory_percent, gpu.memory_fill),
         ]
         .into_iter()
         .enumerate()
@@ -2716,22 +2735,6 @@ impl Renderer {
                 .y
                 .saturating_add(padding_y)
                 .saturating_add(index as i32 * (row_h + gap));
-
-            self.draw_text_content(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: start_x,
-                    y: row_y,
-                    w: label_w,
-                    h: row_h,
-                },
-                label,
-                style,
-                0,
-                0,
-            )?;
 
             let bar_h = gpu.bar_height.min(row_h).max(1);
             let bar_rect = Rect {
@@ -3148,6 +3151,27 @@ fn disk_icon_slot_size(
     ((available as f32 * disk.icon_scale).round() as i32).clamp(1, available)
 }
 
+#[cfg(mhypr_module = "gpu")]
+fn gpu_icon_dimensions(
+    gpu: &crate::modules::gpu::GpuVisual,
+    style: &ModuleStyle,
+    bar_height: i32,
+) -> (i32, i32) {
+    let available_h = bar_height
+        .saturating_sub(style.padding_y.max(0).saturating_mul(2))
+        .max(1);
+    let draw_h = ((available_h as f32 * gpu.icon_scale).round() as i32).clamp(1, available_h);
+    let draw_w = if gpu.icon_height > 0 {
+        ((draw_h as i64 * gpu.icon_width as i64 + gpu.icon_height as i64 / 2)
+            / gpu.icon_height as i64)
+            .max(1)
+            .min(i32::MAX as i64) as i32
+    } else {
+        draw_h
+    };
+    (draw_w, draw_h)
+}
+
 #[cfg(mhypr_module = "memory")]
 fn memory_icon_slot_size(
     memory: &crate::modules::memory::MemoryVisual,
@@ -3273,10 +3297,10 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     #[cfg(mhypr_module = "gpu")]
     if let ModuleVisual::Gpu(gpu) = &view.visual {
         let style = view.style;
-        let label_width = estimate_text_width("M", style);
+        let (icon_width, _) = gpu_icon_dimensions(gpu, style, bar_height);
         let percent_width = estimate_text_width("100%", style);
-        let content = label_width
-            .saturating_add(gpu.text_gap)
+        let content = icon_width
+            .saturating_add(gpu.icon_gap)
             .saturating_add(gpu.bar_width)
             .saturating_add(gpu.text_gap)
             .saturating_add(percent_width);
@@ -3430,6 +3454,7 @@ fn lerp_rgba(from: [u8; 4], to: [u8; 4], t: f32) -> [u8; 4] {
     mhypr_module = "audio",
     mhypr_module = "brightness",
     mhypr_module = "disk",
+    mhypr_module = "gpu",
     mhypr_module = "layout",
     mhypr_module = "memory"
 ))]

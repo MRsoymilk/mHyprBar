@@ -9,8 +9,11 @@ device = "auto"
 
 interval_ms = 1000
 
-# Compact two-line view:
-# G = GPU utilization, M = dedicated VRAM utilization.
+# GPU SVG spans both compact rows. Scale is relative to the bar's available height.
+icon_scale = 0.8
+icon_gap = 4
+
+# Compact two-line view: GPU utilization + dedicated VRAM utilization.
 bar_width = 42
 bar_height = 6
 row_gap = 2
