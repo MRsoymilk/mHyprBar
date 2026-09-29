@@ -50,8 +50,16 @@ impl Renderer {
             background,
         );
 
-        let workspace_width =
-            self.draw_workspaces(canvas, width, height, &config.workspaces, monitor, snapshot)?;
+        let left_width = group_width(&config.left, modules, config.height as i32);
+        let workspace_width = self.draw_workspaces(
+            canvas,
+            width,
+            height,
+            left_width,
+            &config.workspaces,
+            monitor,
+            snapshot,
+        )?;
         let (left_x, center_x, right_x) = group_origins(width, workspace_width, config, modules);
 
         self.draw_group(canvas, width, height, left_x, &config.left, modules, tray)?;
@@ -74,6 +82,7 @@ impl Renderer {
         canvas: &mut [u8],
         width: u32,
         height: u32,
+        start_x: i32,
         style: &WorkspacesConfig,
         monitor: Option<&MonitorState>,
         snapshot: &Snapshot,
@@ -98,7 +107,9 @@ impl Renderer {
                 empty
             };
 
-            let x = (local as i32 - 1).saturating_mul(style.width.saturating_add(style.gap));
+            let x = start_x.saturating_add(
+                (local as i32 - 1).saturating_mul(style.width.saturating_add(style.gap)),
+            );
             let rect = Rect {
                 x,
                 y: 0,
@@ -3518,6 +3529,21 @@ pub struct ModuleHit<'a> {
     pub offset_x: i32,
 }
 
+pub fn workspace_at_x(
+    x: f64,
+    workspace_visible: bool,
+    config: &BarConfig,
+    modules: &ModuleManager,
+) -> Option<u32> {
+    if !workspace_visible || x < 0.0 {
+        return None;
+    }
+    let left_width = group_width(&config.left, modules, config.height as i32);
+    config
+        .workspaces
+        .local_workspace_at_x(x - left_width as f64)
+}
+
 pub fn module_at_x<'a>(
     x: f64,
     width: u32,
@@ -3553,8 +3579,8 @@ fn group_origins(
     let center_width = group_width(&config.center, modules, bar_height);
     let right_width = group_width(&config.right, modules, bar_height);
 
-    let left_x = workspace_width;
-    let left_end = left_x.saturating_add(left_width);
+    let left_x = 0;
+    let left_end = left_width.saturating_add(workspace_width);
     let right_x = (width as i32 - right_width).max(0);
     let centered_x = (width as i32 - center_width) / 2;
     let center_max = right_x.saturating_sub(center_width);

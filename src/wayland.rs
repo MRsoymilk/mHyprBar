@@ -2877,7 +2877,10 @@ impl App {
     }
 
     fn activate_workspace(&mut self, bar_index: usize, x: f64) -> bool {
-        let Some(local_workspace) = self.config.workspaces.local_workspace_at_x(x) else {
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(local_workspace) =
+            render::workspace_at_x(x, workspace_visible, &self.config, &self.modules)
+        else {
             return false;
         };
         let Some(monitor) = self.monitor_for_bar(bar_index).cloned() else {
