@@ -425,7 +425,7 @@ fn default_bar_width() -> i32 {
 }
 
 fn default_bar_height() -> i32 {
-    4
+    6
 }
 
 fn default_row_gap() -> i32 {
