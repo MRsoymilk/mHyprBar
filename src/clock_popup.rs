@@ -135,10 +135,18 @@ pub struct CalendarCell {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockPopupMode {
+    Calendar,
+    Months,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClockPopupAction {
     Previous,
     Today,
     Next,
+    OpenMonths,
+    SelectMonth(u32),
 }
 
 pub struct ClockPopupModel {
@@ -146,6 +154,7 @@ pub struct ClockPopupModel {
     pub now: LocalDateTime,
     pub view_year: i32,
     pub view_month: u32,
+    pub mode: ClockPopupMode,
     pub cells: Vec<CalendarCell>,
 }
 
@@ -161,6 +170,7 @@ impl ClockPopupModel {
             now,
             view_year,
             view_month,
+            mode: ClockPopupMode::Calendar,
             cells,
         })
     }
@@ -190,33 +200,93 @@ impl ClockPopupModel {
         self.rebuild_calendar()
     }
 
-    pub fn apply_action(&mut self, action: ClockPopupAction) -> Result<()> {
-        match action {
-            ClockPopupAction::Previous => self.navigate_month(-1),
-            ClockPopupAction::Today => self.reset_to_current_month(),
-            ClockPopupAction::Next => self.navigate_month(1),
+    pub fn navigate(&mut self, delta: i32) -> Result<()> {
+        if self.mode == ClockPopupMode::Months {
+            self.view_year = self.view_year.saturating_add(delta.signum());
+            Ok(())
+        } else {
+            self.navigate_month(delta)
         }
     }
 
-    pub fn header_action_at(&self, x: f64, y: f64) -> Option<ClockPopupAction> {
-        let top = self.config.padding as f64;
-        let bottom = top + 26.0;
-        if y < top || y >= bottom {
-            return None;
+    pub fn apply_action(&mut self, action: ClockPopupAction) -> Result<()> {
+        match action {
+            ClockPopupAction::Previous => self.navigate(-1),
+            ClockPopupAction::Today => {
+                self.mode = ClockPopupMode::Calendar;
+                self.reset_to_current_month()
+            }
+            ClockPopupAction::Next => self.navigate(1),
+            ClockPopupAction::OpenMonths => {
+                self.mode = ClockPopupMode::Months;
+                Ok(())
+            }
+            ClockPopupAction::SelectMonth(month) => {
+                if !(1..=12).contains(&month) {
+                    return Ok(());
+                }
+                self.view_month = month;
+                self.mode = ClockPopupMode::Calendar;
+                self.rebuild_calendar()
+            }
         }
+    }
 
+    pub fn action_at(&self, x: f64, y: f64) -> Option<ClockPopupAction> {
+        let top = self.config.padding as f64;
+        let header_bottom = top + 26.0;
         let left = self.config.padding as f64;
         let right = (self.config.width - self.config.padding) as f64;
         let button_width = 30.0;
-        if x >= left && x < left + button_width {
-            Some(ClockPopupAction::Previous)
-        } else if x >= right - button_width && x < right {
-            Some(ClockPopupAction::Next)
-        } else if x >= left + button_width && x < right - button_width {
-            Some(ClockPopupAction::Today)
-        } else {
-            None
+
+        if y >= top && y < header_bottom {
+            if x >= left && x < left + button_width {
+                return Some(ClockPopupAction::Previous);
+            }
+            if x >= right - button_width && x < right {
+                return Some(ClockPopupAction::Next);
+            }
+
+            let title_left = left + button_width;
+            let title_right = right - button_width;
+            if x >= title_left && x < title_right {
+                if self.mode == ClockPopupMode::Calendar {
+                    let year_width = 68.0;
+                    if x >= title_right - year_width {
+                        return Some(ClockPopupAction::OpenMonths);
+                    }
+                }
+                return Some(ClockPopupAction::Today);
+            }
+            return None;
         }
+
+        if self.mode != ClockPopupMode::Months {
+            return None;
+        }
+
+        let body_top = self
+            .config
+            .padding
+            .saturating_add(self.config.header_height)
+            .saturating_add(1) as f64;
+        let body_height = self
+            .config
+            .weekday_height
+            .saturating_add(self.config.cell_height.saturating_mul(6));
+        let content_width = (self.config.width - self.config.padding * 2).max(3);
+        let column_width = (content_width / 3).max(1);
+        let row_height = (body_height / 4).max(1);
+        let body_bottom = body_top + (row_height * 4) as f64;
+
+        if x < left || x >= right || y < body_top || y >= body_bottom {
+            return None;
+        }
+
+        let column = ((x - left) as i32 / column_width).clamp(0, 2);
+        let row = ((y - body_top) as i32 / row_height).clamp(0, 3);
+        let month = (row * 3 + column + 1) as u32;
+        Some(ClockPopupAction::SelectMonth(month))
     }
 
     fn rebuild_calendar(&mut self) -> Result<()> {
@@ -232,10 +302,6 @@ impl ClockPopupModel {
             .saturating_add(1)
             .saturating_add(self.config.weekday_height)
             .saturating_add(self.config.cell_height.saturating_mul(6))
-    }
-
-    pub fn month_title(&self) -> String {
-        format!("{} {}", month_name(self.view_month), self.view_year)
     }
 
     pub fn date_summary(&self) -> String {
@@ -373,7 +439,7 @@ fn default_popup_style() -> ModuleStyle {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClockPopupModel, build_calendar};
+    use super::{ClockPopupAction, ClockPopupMode, ClockPopupModel, build_calendar};
     use crate::modules::clock::LocalDateTime;
 
     fn sample_now() -> LocalDateTime {
@@ -405,6 +471,7 @@ mod tests {
             now: sample_now(),
             view_year: 2026,
             view_month: 12,
+            mode: ClockPopupMode::Calendar,
             cells: Vec::new(),
         };
         model.navigate_month(1).expect("next month");
@@ -413,5 +480,32 @@ mod tests {
         assert_eq!((model.view_year, model.view_month), (2026, 11));
         model.reset_to_current_month().expect("current month");
         assert_eq!((model.view_year, model.view_month), (2026, 9));
+    }
+
+    #[test]
+    fn year_view_selects_from_twelve_months() {
+        let mut model = ClockPopupModel {
+            config: Default::default(),
+            now: sample_now(),
+            view_year: 2026,
+            view_month: 9,
+            mode: ClockPopupMode::Calendar,
+            cells: Vec::new(),
+        };
+
+        model
+            .apply_action(ClockPopupAction::OpenMonths)
+            .expect("open months");
+        assert_eq!(model.mode, ClockPopupMode::Months);
+
+        model.navigate(1).expect("next year");
+        assert_eq!(model.view_year, 2027);
+
+        model
+            .apply_action(ClockPopupAction::SelectMonth(2))
+            .expect("select February");
+        assert_eq!(model.mode, ClockPopupMode::Calendar);
+        assert_eq!((model.view_year, model.view_month), (2027, 2));
+        assert_eq!(model.cells.len(), 42);
     }
 }

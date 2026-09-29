@@ -432,25 +432,80 @@ impl Renderer {
             w: (content_w - nav_w * 2).max(1),
             h: nav_h,
         };
-        let month_title = model.month_title();
-        let month_title_w = estimate_text_width(&month_title, &title_style)
-            .min(title_rect.w)
-            .max(1);
-        self.draw_text_content(
-            canvas,
-            width,
-            height,
-            Rect {
-                x: title_rect.x + (title_rect.w - month_title_w).max(0) / 2,
+        if model.mode == crate::clock_popup::ClockPopupMode::Months {
+            let year_text = model.view_year.to_string();
+            let year_w = estimate_text_width(&year_text, &title_style)
+                .min(title_rect.w)
+                .max(1);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: title_rect.x + (title_rect.w - year_w).max(0) / 2,
+                    y: title_rect.y,
+                    w: year_w,
+                    h: title_rect.h,
+                },
+                &year_text,
+                &title_style,
+                0,
+                0,
+            )?;
+        } else {
+            let year_w = 68.min(title_rect.w).max(1);
+            let month_rect = Rect {
+                x: title_rect.x,
                 y: title_rect.y,
-                w: month_title_w,
+                w: title_rect.w.saturating_sub(year_w),
                 h: title_rect.h,
-            },
-            &month_title,
-            &title_style,
-            0,
-            0,
-        )?;
+            };
+            let year_rect = Rect {
+                x: title_rect.x + title_rect.w - year_w,
+                y: title_rect.y,
+                w: year_w,
+                h: title_rect.h,
+            };
+            let month_text = crate::modules::clock::month_name(model.view_month);
+            let month_w = estimate_text_width(month_text, &title_style)
+                .min(month_rect.w)
+                .max(1);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: month_rect.x + (month_rect.w - month_w).max(0) / 2,
+                    y: month_rect.y,
+                    w: month_w,
+                    h: month_rect.h,
+                },
+                month_text,
+                &title_style,
+                0,
+                0,
+            )?;
+            draw_rect_border(canvas, width, height, year_rect, separator, 1);
+            let year_text = model.view_year.to_string();
+            let year_text_w = estimate_text_width(&year_text, &title_style)
+                .min(year_rect.w)
+                .max(1);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: year_rect.x + (year_rect.w - year_text_w).max(0) / 2,
+                    y: year_rect.y,
+                    w: year_text_w,
+                    h: year_rect.h,
+                },
+                &year_text,
+                &title_style,
+                0,
+                0,
+            )?;
+        }
 
         let summary_y = y + nav_h;
         let summary_h = (cfg.header_height - nav_h).max(1);
@@ -504,6 +559,73 @@ impl Renderer {
             separator,
         );
         y = y.saturating_add(1);
+
+        if model.mode == crate::clock_popup::ClockPopupMode::Months {
+            let body_height = cfg
+                .weekday_height
+                .saturating_add(cfg.cell_height.saturating_mul(6));
+            let column_w = (content_w / 3).max(1);
+            let row_h = (body_height / 4).max(1);
+            let months = [
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
+            ];
+
+            for (index, label) in months.iter().enumerate() {
+                let row = index / 3;
+                let column = index % 3;
+                let cell = Rect {
+                    x: content_x + column as i32 * column_w,
+                    y: y + row as i32 * row_h,
+                    w: column_w,
+                    h: row_h,
+                };
+                let selected = model.view_month == index as u32 + 1;
+                if selected {
+                    let inset = 4;
+                    fill_rect(
+                        canvas,
+                        width,
+                        height,
+                        Rect {
+                            x: cell.x + inset,
+                            y: cell.y + inset,
+                            w: (cell.w - inset * 2).max(1),
+                            h: (cell.h - inset * 2).max(1),
+                        },
+                        today_background,
+                    );
+                }
+                let style = if selected { &today_style } else { &cfg.style };
+                let text_w = estimate_text_width(label, style).min(cell.w).max(1);
+                self.draw_text_content(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: cell.x + (cell.w - text_w).max(0) / 2,
+                        y: cell.y,
+                        w: text_w,
+                        h: cell.h,
+                    },
+                    label,
+                    style,
+                    0,
+                    0,
+                )?;
+            }
+            return Ok(());
+        }
 
         let weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
         let column_w = (content_w / 7).max(1);

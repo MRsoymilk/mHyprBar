@@ -2622,7 +2622,7 @@ impl PointerHandler for App {
                                         < popup.panel_y + popup.model.panel_height() as f64;
                                 let action = inside
                                     .then(|| {
-                                        popup.model.header_action_at(
+                                        popup.model.action_at(
                                             event.position.0 - popup.panel_x,
                                             event.position.1 - popup.panel_y,
                                         )
@@ -2657,7 +2657,7 @@ impl PointerHandler for App {
                         if delta != 0 {
                             let month_delta = if delta > 0 { 1 } else { -1 };
                             if let Some(popup) = self.clock_popup.as_mut()
-                                && let Err(error) = popup.model.navigate_month(month_delta)
+                                && let Err(error) = popup.model.navigate(month_delta)
                             {
                                 eprintln!("mhyprbar: clock calendar scroll failed: {error:#}");
                             }
