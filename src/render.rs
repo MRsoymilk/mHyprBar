@@ -2407,19 +2407,27 @@ impl Renderer {
         let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(2);
         let gap = memory.row_gap.min(content_h.saturating_sub(2)).max(0);
         let row_h = ((content_h - gap) / 2).max(1);
-        let label_w = estimate_text_width("M", style).max(1);
+        let icon_size = memory_icon_slot_size(memory, style, rect.h);
         let percent_w = estimate_text_width("100%", style).max(1);
         let start_x = rect.x.saturating_add(padding_x);
         let bar_x = start_x
-            .saturating_add(label_w)
-            .saturating_add(memory.text_gap);
+            .saturating_add(icon_size)
+            .saturating_add(memory.icon_gap);
         let percent_x = bar_x
             .saturating_add(memory.bar_width)
             .saturating_add(memory.text_gap);
 
-        for (index, (label, percent, fill)) in [
-            ("M", memory.memory_percent, memory.memory_fill),
-            ("S", memory.swap_percent, memory.swap_fill),
+        for (index, (percent, fill, pixels)) in [
+            (
+                memory.memory_percent,
+                memory.memory_fill,
+                memory.memory_icon_pixels.as_ref(),
+            ),
+            (
+                memory.swap_percent,
+                memory.swap_fill,
+                memory.swap_icon_pixels.as_ref(),
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -2428,22 +2436,20 @@ impl Renderer {
                 .y
                 .saturating_add(padding_y)
                 .saturating_add(index as i32 * (row_h + gap));
+            let icon_y = row_y.saturating_add((row_h - icon_size) / 2);
 
-            self.draw_text_content(
+            draw_tinted_rgba_mask(
                 canvas,
                 width,
                 height,
-                Rect {
-                    x: start_x,
-                    y: row_y,
-                    w: label_w,
-                    h: row_h,
-                },
-                label,
-                style,
-                0,
-                0,
-            )?;
+                start_x,
+                icon_y,
+                icon_size,
+                memory.icon_width,
+                memory.icon_height,
+                pixels,
+                fill,
+            );
 
             let bar_h = memory.bar_height.min(row_h).max(1);
             let bar_rect = Rect {
@@ -2753,6 +2759,20 @@ fn disk_icon_slot_size(
     ((available as f32 * disk.icon_scale).round() as i32).clamp(1, available)
 }
 
+#[cfg(mhypr_module = "memory")]
+fn memory_icon_slot_size(
+    memory: &crate::modules::memory::MemoryVisual,
+    style: &ModuleStyle,
+    bar_height: i32,
+) -> i32 {
+    let content_h = bar_height
+        .saturating_sub(style.padding_y.max(0).saturating_mul(2))
+        .max(2);
+    let gap = memory.row_gap.min(content_h.saturating_sub(2)).max(0);
+    let row_h = ((content_h - gap) / 2).max(1);
+    ((row_h as f32 * memory.icon_scale).round() as i32).clamp(1, row_h)
+}
+
 fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     if let Some(width) = view.width_override {
         return width.max(0);
@@ -2877,10 +2897,10 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     #[cfg(mhypr_module = "memory")]
     if let ModuleVisual::Memory(memory) = &view.visual {
         let style = view.style;
-        let label_width = estimate_text_width("M", style);
+        let icon_slot = memory_icon_slot_size(memory, style, bar_height);
         let percent_width = estimate_text_width("100%", style);
-        let content = label_width
-            .saturating_add(memory.text_gap)
+        let content = icon_slot
+            .saturating_add(memory.icon_gap)
             .saturating_add(memory.bar_width)
             .saturating_add(memory.text_gap)
             .saturating_add(percent_width);
@@ -3005,7 +3025,8 @@ fn lerp_rgba(from: [u8; 4], to: [u8; 4], t: f32) -> [u8; 4] {
     mhypr_module = "audio",
     mhypr_module = "brightness",
     mhypr_module = "disk",
-    mhypr_module = "layout"
+    mhypr_module = "layout",
+    mhypr_module = "memory"
 ))]
 #[allow(clippy::too_many_arguments)]
 fn draw_tinted_rgba_mask(

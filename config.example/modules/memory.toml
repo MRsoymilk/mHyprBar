@@ -1,6 +1,9 @@
 interval_ms = 1000
 
 # Compact two-line status-bar view.
+# SVG icons are scaled relative to each row's available height.
+icon_scale = 1.0
+icon_gap = 3
 bar_width = 42
 bar_height = 4
 row_gap = 2
