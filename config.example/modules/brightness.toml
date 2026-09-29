@@ -2,7 +2,8 @@ device = "auto"
 interval_ms = 750
 step_percent = 5
 min_percent = 5
-icon_size = 14
+# Visible SVG content scale relative to the bar's available height.
+icon_scale = 1.0
 bar_width = 32
 bar_height = 4
 text_gap = 4

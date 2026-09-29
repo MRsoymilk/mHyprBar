@@ -1851,56 +1851,25 @@ impl Renderer {
         let padding_x = view.style.padding_x.max(0);
         let padding_y = view.style.padding_y.max(0);
         let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
-        let icon_size = brightness.icon_size.min(content_h).max(7);
+        let icon_size = brightness_icon_slot_size(brightness, view.style, rect.h);
         let icon_x = rect.x.saturating_add(padding_x);
         let icon_y = rect
             .y
             .saturating_add(padding_y)
             .saturating_add((content_h - icon_size) / 2);
-        let cx = icon_x + icon_size / 2;
-        let cy = icon_y + icon_size / 2;
-        let core = 5;
 
-        fill_rect(
+        draw_tinted_rgba_mask(
             canvas,
             width,
             height,
-            Rect {
-                x: cx - core / 2,
-                y: cy - core / 2,
-                w: core,
-                h: core,
-            },
+            icon_x,
+            icon_y,
+            icon_size,
+            brightness.icon_width,
+            brightness.icon_height,
+            &brightness.icon_pixels,
             brightness.fill,
         );
-        for ray in [
-            Rect {
-                x: cx,
-                y: icon_y,
-                w: 1,
-                h: 3,
-            },
-            Rect {
-                x: cx,
-                y: icon_y + icon_size - 3,
-                w: 1,
-                h: 3,
-            },
-            Rect {
-                x: icon_x,
-                y: cy,
-                w: 3,
-                h: 1,
-            },
-            Rect {
-                x: icon_x + icon_size - 3,
-                y: cy,
-                w: 3,
-                h: 1,
-            },
-        ] {
-            fill_rect(canvas, width, height, ray, brightness.fill);
-        }
 
         let bar_x = icon_x
             .saturating_add(icon_size)
@@ -2795,6 +2764,18 @@ fn audio_icon_slot_size(
     ((available as f32 * audio.icon_scale).round() as i32).clamp(1, available)
 }
 
+#[cfg(mhypr_module = "brightness")]
+fn brightness_icon_slot_size(
+    brightness: &crate::modules::brightness::BrightnessVisual,
+    style: &ModuleStyle,
+    bar_height: i32,
+) -> i32 {
+    let available = bar_height
+        .saturating_sub(style.padding_y.max(0).saturating_mul(2))
+        .max(1);
+    ((available as f32 * brightness.icon_scale).round() as i32).clamp(1, available)
+}
+
 fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     if let Some(width) = view.width_override {
         return width.max(0);
@@ -2836,8 +2817,8 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     if let ModuleVisual::Brightness(brightness) = &view.visual {
         let style = view.style;
         let percent_width = estimate_text_width("100%", style);
-        let content = brightness
-            .icon_size
+        let icon_slot = brightness_icon_slot_size(brightness, style, bar_height);
+        let content = icon_slot
             .saturating_add(brightness.text_gap)
             .saturating_add(brightness.bar_width)
             .saturating_add(brightness.text_gap)
@@ -3041,7 +3022,7 @@ fn lerp_rgba(from: [u8; 4], to: [u8; 4], t: f32) -> [u8; 4] {
     ]
 }
 
-#[cfg(mhypr_module = "audio")]
+#[cfg(any(mhypr_module = "audio", mhypr_module = "brightness"))]
 #[allow(clippy::too_many_arguments)]
 fn draw_tinted_rgba_mask(
     canvas: &mut [u8],
