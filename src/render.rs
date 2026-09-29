@@ -2792,11 +2792,7 @@ fn audio_icon_slot_size(
     let available = bar_height
         .saturating_sub(style.padding_y.max(0).saturating_mul(2))
         .max(1);
-    if audio.icon_size > 0 {
-        audio.icon_size.min(available).max(1)
-    } else {
-        available
-    }
+    ((available as f32 * audio.icon_scale).round() as i32).clamp(1, available)
 }
 
 fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {

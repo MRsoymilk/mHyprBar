@@ -31,8 +31,8 @@ struct AudioConfig {
     step_percent: u32,
     #[serde(default = "default_max_percent")]
     max_percent: u32,
-    #[serde(default = "default_icon_size")]
-    icon_size: i32,
+    #[serde(default = "default_icon_scale")]
+    icon_scale: f32,
     #[serde(default = "default_bar_width")]
     bar_width: i32,
     #[serde(default = "default_bar_height")]
@@ -109,7 +109,7 @@ impl AudioIcons {
 pub struct AudioVisual {
     pub percent: u32,
     pub muted: bool,
-    pub icon_size: i32,
+    pub icon_scale: f32,
     pub icon_pixels: Arc<[u8]>,
     pub icon_width: i32,
     pub icon_height: i32,
@@ -265,7 +265,7 @@ impl StatusModule for AudioModule {
         ModuleVisual::Audio(AudioVisual {
             percent: self.state.percent,
             muted: self.state.muted,
-            icon_size: self.config.icon_size,
+            icon_scale: self.config.icon_scale,
             icon_pixels: icon.pixels,
             icon_width: icon.width,
             icon_height: icon.height,
@@ -427,10 +427,12 @@ fn validate_config(config: &AudioConfig) -> Result<()> {
         "audio max_percent must be in 100..=200"
     );
     ensure!(
-        (config.icon_size == 0 || config.icon_size > 4)
-            && config.bar_width > 0
-            && config.bar_height > 0,
-        "audio icon_size must be 0 (auto) or greater than 4, and bar dimensions must be positive"
+        config.bar_width > 0 && config.bar_height > 0,
+        "audio bar dimensions must be positive"
+    );
+    ensure!(
+        config.icon_scale.is_finite() && (0.1..=1.0).contains(&config.icon_scale),
+        "audio icon_scale must be in 0.1..=1.0"
     );
     ensure!(config.text_gap >= 0, "audio text_gap must not be negative");
     config.style.validate()?;
@@ -542,8 +544,8 @@ fn default_max_percent() -> u32 {
     150
 }
 
-fn default_icon_size() -> i32 {
-    0
+fn default_icon_scale() -> f32 {
+    1.0
 }
 
 fn default_bar_width() -> i32 {

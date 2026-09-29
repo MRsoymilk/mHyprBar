@@ -3,8 +3,8 @@ target = "auto"
 interval_ms = 500
 step_percent = 5
 max_percent = 150
-# 0 = fit the visible SVG content to the bar's available height.
-icon_size = 0
+# Visible SVG content scale relative to the bar's available height.
+icon_scale = 1.0
 bar_width = 32
 bar_height = 4
 text_gap = 4
