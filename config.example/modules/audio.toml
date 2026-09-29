@@ -1,13 +1,22 @@
-target = "@DEFAULT_AUDIO_SINK@"
+backend = "auto"
+target = "auto"
 interval_ms = 500
-label = "VOL"
-muted_text = "MUTE"
+step_percent = 5
+max_percent = 150
+# Visible SVG content scale relative to the bar's available height.
+icon_scale = 1.0
+bar_width = 32
+bar_height = 4
+text_gap = 4
+bar_background = "#303030"
+fill = "#8AB4FF"
+muted_fill = "#FF5C6C"
 
 [style]
 foreground = "#F2F2F2"
 background = "transparent"
 font_family = "sans-serif"
-font_size = 13.0
-padding_x = 8
-padding_y = 4
-min_width = 84
+font_size = 10.0
+padding_x = 5
+padding_y = 0
+min_width = 0

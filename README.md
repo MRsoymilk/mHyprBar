@@ -21,7 +21,7 @@ The base panel and first status-module renderer are implemented:
 - per-module font, color, padding and minimum width;
 - independent refresh intervals per periodic module;
 - event-driven active-window title updates;
-- live clock, CPU, memory, disk and battery text sources;
+- live clock, memory, disk and battery text sources plus an awesome-wm-widgets-style CPU history graph;
 - Hyprland monitor/workspace state over native Unix-socket IPC;
 - event-driven workspace/monitor updates from Hyprland socket2;
 - local workspace labels 1–9 on every monitor;
@@ -111,6 +111,48 @@ Each compiled module has its own configuration file:
 ~~~
 
 The per-module file controls module-specific behavior and visual style. Periodic modules also define their own refresh interval; event-driven modules such as `active_window` do not poll. An empty module value is hidden completely and consumes no bar width.
+
+### CPU graph
+
+The CPU module reads only the aggregate `cpu` line from `/proc/stat` during normal bar operation. Its default visual follows the compact graph style used by `awesome-wm-widgets/cpu-widget`: a 50 px history graph, 2 px steps, 1 px spacing and a 1 second refresh. New samples appear on the right. Low load uses `graph_low`; taller bars extend into `graph_mid` and `graph_high`, so high utilization naturally reaches yellow/red near the top of the graph.
+
+~~~toml
+label = ""
+interval_ms = 1000
+warn_percent = 85.0
+graph_enabled = true
+graph_width = 50
+graph_height = 0 # 0 = fill the available bar height
+step_width = 2
+step_spacing = 1
+show_percent = false
+~~~
+
+Set `show_percent = true` to add the current numeric percentage to the right of the graph, or set `label = "CPU"` if a text prefix is desired.
+
+Left-clicking the CPU graph toggles an in-process CPU details popup inspired by `awesome-wm-widgets/cpu-widget`. The popup stays CPU-focused: it shows per-core utilization bars plus the top CPU processes with only `PID`, `Name`, and `%CPU`. The normal bar remains lightweight; `ps` is launched only while the popup is open, and the popup refreshes independently.
+
+~~~toml
+[popup]
+enabled = true
+width = 360
+row_height = 24
+padding = 10
+refresh_ms = 1000
+max_processes = 10
+bar_width = 150
+bar_background = "#303030"
+bar_fill = "#F2F2F2"
+border = "#626262"
+separator = "#626262"
+hover_background = "#3A3A3AF0"
+
+[popup.style]
+foreground = "#F2F2F2"
+background = "#202020F2"
+font_family = "sans-serif"
+font_size = 12.0
+~~~
 
 Install the example configuration:
 

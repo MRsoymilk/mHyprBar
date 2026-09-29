@@ -1,0 +1,20 @@
+device = "auto"
+interval_ms = 750
+step_percent = 5
+min_percent = 5
+# Visible SVG content scale relative to the bar's available height.
+icon_scale = 1.0
+bar_width = 32
+bar_height = 4
+text_gap = 4
+bar_background = "#303030"
+fill = "#FFD84A"
+
+[style]
+foreground = "#F2F2F2"
+background = "transparent"
+font_family = "sans-serif"
+font_size = 10.0
+padding_x = 5
+padding_y = 0
+min_width = 0

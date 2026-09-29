@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
-use super::StatusModule;
+use super::{ModuleVisual, StatusModule};
 use crate::config::{self, ModuleStyle};
 
 pub const NAME: &str = "network";
@@ -19,18 +19,25 @@ struct NetworkConfig {
     interface: String,
     #[serde(default = "default_interval_ms")]
     interval_ms: u64,
-    #[serde(default = "default_show_interface")]
-    show_interface: bool,
     #[serde(default = "default_show_rates")]
     show_rates: bool,
     #[serde(default)]
     style: ModuleStyle,
 }
 
+#[derive(Clone)]
+pub struct NetworkVisual {
+    pub interface: String,
+    pub download_text: String,
+    pub upload_text: String,
+}
+
 pub struct NetworkModule {
     config: NetworkConfig,
     previous: Option<(Instant, u64, u64)>,
     resolved_interface: Option<String>,
+    visual: NetworkVisual,
+    revision: u64,
 }
 
 impl NetworkModule {
@@ -45,10 +52,17 @@ impl NetworkModule {
             "network interface must not be empty"
         );
         config.style.validate()?;
+        let _ = crate::network_popup::NetworkPopupConfig::load()?;
         Ok(Self {
             config,
             previous: None,
             resolved_interface: None,
+            visual: NetworkVisual {
+                interface: String::new(),
+                download_text: "↓ --".into(),
+                upload_text: "↑ --".into(),
+            },
+            revision: 0,
         })
     }
 
@@ -117,24 +131,38 @@ impl StatusModule for NetworkModule {
         });
         self.previous = Some((now, rx, tx));
 
-        let mut parts = Vec::new();
-        if self.config.show_interface {
-            parts.push(interface);
-        } else {
-            parts.push("NET".into());
-        }
-
-        if self.config.show_rates {
+        let (download_text, upload_text) = if self.config.show_rates {
             if let Some((rx_rate, tx_rate)) = rates {
-                parts.push(format!("↓{}", format_rate(rx_rate)));
-                parts.push(format!("↑{}", format_rate(tx_rate)));
+                (
+                    format!("↓ {}", format_rate(rx_rate)),
+                    format!("↑ {}", format_rate(tx_rate)),
+                )
             } else {
-                parts.push("↓--".into());
-                parts.push("↑--".into());
+                ("↓ --".into(), "↑ --".into())
             }
+        } else {
+            ("↓".into(), "↑".into())
+        };
+
+        let changed = self.visual.interface != interface
+            || self.visual.download_text != download_text
+            || self.visual.upload_text != upload_text;
+        self.visual.interface = interface;
+        self.visual.download_text = download_text;
+        self.visual.upload_text = upload_text;
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
         }
 
-        Ok(parts.join(" "))
+        Ok(String::new())
+    }
+
+    fn visual(&self) -> ModuleVisual {
+        ModuleVisual::Network(self.visual.clone())
+    }
+
+    fn visual_revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -194,10 +222,6 @@ fn default_interface() -> String {
 
 fn default_interval_ms() -> u64 {
     1_000
-}
-
-fn default_show_interface() -> bool {
-    true
 }
 
 fn default_show_rates() -> bool {

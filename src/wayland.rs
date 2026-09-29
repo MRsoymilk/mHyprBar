@@ -36,11 +36,27 @@ use wayland_client::{
     protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
 
+#[cfg(mhypr_module = "battery")]
+use crate::battery_popup::BatteryPopupModel;
+#[cfg(mhypr_module = "clock")]
+use crate::clock_popup::ClockPopupModel;
+#[cfg(mhypr_module = "cpu")]
+use crate::cpu_popup::CpuPopupModel;
+#[cfg(mhypr_module = "disk")]
+use crate::disk_popup::DiskPopupModel;
+#[cfg(mhypr_module = "gpu")]
+use crate::gpu_popup::{GpuPopupConfig, GpuPopupModel};
+#[cfg(mhypr_module = "memory")]
+use crate::memory_popup::MemoryPopupModel;
+#[cfg(mhypr_module = "monitor")]
+use crate::monitor_popup::{MonitorPopupModel, context_action};
+#[cfg(mhypr_module = "network")]
+use crate::network_popup::NetworkPopupModel;
 use crate::{
-    config::BarConfig,
+    config::{BarConfig, ModuleStyle},
     hyprland::{self, MonitorState, Snapshot},
     ipc::{self, Request},
-    modules::ModuleManager,
+    modules::{ModuleManager, ModuleVisual},
     render::{self, Renderer},
     tray::TrayState,
 };
@@ -114,6 +130,24 @@ pub fn run(config: BarConfig) -> Result<()> {
         tray,
         tray_hover: None,
         tooltip: None,
+        #[cfg(mhypr_module = "battery")]
+        battery_popup: None,
+        #[cfg(mhypr_module = "clock")]
+        clock_popup: None,
+        #[cfg(mhypr_module = "cpu")]
+        cpu_popup: None,
+        #[cfg(mhypr_module = "disk")]
+        disk_popup: None,
+        #[cfg(mhypr_module = "gpu")]
+        gpu_popup: None,
+        #[cfg(mhypr_module = "memory")]
+        memory_popup: None,
+        #[cfg(mhypr_module = "monitor")]
+        monitor_popup: None,
+        #[cfg(mhypr_module = "monitor")]
+        monitor_context: None,
+        #[cfg(mhypr_module = "network")]
+        network_popup: None,
         #[cfg(mhypr_module = "tray")]
         tray_popup: None,
         exit: false,
@@ -194,6 +228,19 @@ pub fn run(config: BarConfig) -> Result<()> {
                                     Err(error) => format!("error: {error:#}\n"),
                                 },
                                 Ok(Some(Request::Status)) => app.status_text(),
+                                Ok(Some(Request::CpuPopupToggle)) => {
+                                    #[cfg(mhypr_module = "cpu")]
+                                    {
+                                        match app.toggle_cpu_popup_first(&control_qh) {
+                                            Ok(()) => "ok\n".to_owned(),
+                                            Err(error) => format!("error: {error:#}\n"),
+                                        }
+                                    }
+                                    #[cfg(not(mhypr_module = "cpu"))]
+                                    {
+                                        "error: cpu module is not compiled\n".to_owned()
+                                    }
+                                }
                                 Ok(Some(Request::TrayList)) => app.tray_list_text(),
                                 Ok(Some(Request::TrayMenuOpen { index })) => {
                                     match app.open_tray_popup_index(&control_qh, index) {
@@ -235,6 +282,34 @@ pub fn run(config: BarConfig) -> Result<()> {
         if let Some(tooltip_timeout) = app.tray_hover_timeout() {
             timeout = timeout.min(tooltip_timeout);
         }
+        #[cfg(mhypr_module = "battery")]
+        if let Some(battery_timeout) = app.battery_popup_timeout() {
+            timeout = timeout.min(battery_timeout);
+        }
+        #[cfg(mhypr_module = "clock")]
+        if let Some(clock_timeout) = app.clock_popup_timeout() {
+            timeout = timeout.min(clock_timeout);
+        }
+        #[cfg(mhypr_module = "cpu")]
+        if let Some(cpu_timeout) = app.cpu_popup_timeout() {
+            timeout = timeout.min(cpu_timeout);
+        }
+        #[cfg(mhypr_module = "disk")]
+        if let Some(disk_timeout) = app.disk_popup_timeout() {
+            timeout = timeout.min(disk_timeout);
+        }
+        #[cfg(mhypr_module = "gpu")]
+        if let Some(gpu_timeout) = app.gpu_popup_timeout() {
+            timeout = timeout.min(gpu_timeout);
+        }
+        #[cfg(mhypr_module = "monitor")]
+        if let Some(monitor_timeout) = app.monitor_popup_timeout() {
+            timeout = timeout.min(monitor_timeout);
+        }
+        #[cfg(mhypr_module = "memory")]
+        if let Some(memory_timeout) = app.memory_popup_timeout() {
+            timeout = timeout.min(memory_timeout);
+        }
         event_loop
             .dispatch(Some(timeout), &mut app)
             .context("event loop dispatch failed")?;
@@ -242,6 +317,20 @@ pub fn run(config: BarConfig) -> Result<()> {
             app.draw_all();
         }
         app.maybe_show_tray_tooltip(&qh);
+        #[cfg(mhypr_module = "battery")]
+        app.refresh_battery_popup_if_due();
+        #[cfg(mhypr_module = "clock")]
+        app.refresh_clock_popup_if_due();
+        #[cfg(mhypr_module = "cpu")]
+        app.refresh_cpu_popup_if_due();
+        #[cfg(mhypr_module = "disk")]
+        app.refresh_disk_popup_if_due();
+        #[cfg(mhypr_module = "gpu")]
+        app.refresh_gpu_popup_if_due();
+        #[cfg(mhypr_module = "monitor")]
+        app.refresh_monitor_popup_if_due();
+        #[cfg(mhypr_module = "memory")]
+        app.refresh_memory_popup_if_due();
     }
 
     Ok(())
@@ -268,11 +357,121 @@ struct TrayHover {
 struct TooltipSurface {
     layer: LayerSurface,
     text: String,
+    style: ModuleStyle,
     width: u32,
     height: u32,
     configured: bool,
     bar_index: usize,
-    item_index: usize,
+    item_index: Option<usize>,
+}
+
+#[cfg(mhypr_module = "battery")]
+struct BatteryPopupSurface {
+    layer: LayerSurface,
+    model: BatteryPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
+}
+
+#[cfg(mhypr_module = "clock")]
+struct ClockPopupSurface {
+    layer: LayerSurface,
+    model: ClockPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
+}
+
+#[cfg(mhypr_module = "cpu")]
+struct CpuPopupSurface {
+    layer: LayerSurface,
+    model: CpuPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
+}
+
+#[cfg(mhypr_module = "gpu")]
+struct GpuPopupSurface {
+    layer: LayerSurface,
+    model: GpuPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
+}
+
+#[cfg(mhypr_module = "monitor")]
+struct MonitorPopupSurface {
+    layer: LayerSurface,
+    model: MonitorPopupModel,
+    output: wl_output::WlOutput,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
+}
+
+#[cfg(mhypr_module = "monitor")]
+struct MonitorContextSurface {
+    layer: LayerSurface,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    panel_width: i32,
+    row_height: i32,
+    hovered_action: Option<usize>,
+}
+
+#[cfg(mhypr_module = "network")]
+struct NetworkPopupSurface {
+    layer: LayerSurface,
+    model: NetworkPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+}
+
+#[cfg(mhypr_module = "disk")]
+struct DiskPopupSurface {
+    layer: LayerSurface,
+    model: DiskPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
+}
+
+#[cfg(mhypr_module = "memory")]
+struct MemoryPopupSurface {
+    layer: LayerSurface,
+    model: MemoryPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
 }
 
 #[cfg(mhypr_module = "tray")]
@@ -326,6 +525,24 @@ struct App {
     tray: Option<TrayState>,
     tray_hover: Option<TrayHover>,
     tooltip: Option<TooltipSurface>,
+    #[cfg(mhypr_module = "battery")]
+    battery_popup: Option<BatteryPopupSurface>,
+    #[cfg(mhypr_module = "clock")]
+    clock_popup: Option<ClockPopupSurface>,
+    #[cfg(mhypr_module = "cpu")]
+    cpu_popup: Option<CpuPopupSurface>,
+    #[cfg(mhypr_module = "disk")]
+    disk_popup: Option<DiskPopupSurface>,
+    #[cfg(mhypr_module = "gpu")]
+    gpu_popup: Option<GpuPopupSurface>,
+    #[cfg(mhypr_module = "memory")]
+    memory_popup: Option<MemoryPopupSurface>,
+    #[cfg(mhypr_module = "monitor")]
+    monitor_popup: Option<MonitorPopupSurface>,
+    #[cfg(mhypr_module = "monitor")]
+    monitor_context: Option<MonitorContextSurface>,
+    #[cfg(mhypr_module = "network")]
+    network_popup: Option<NetworkPopupSurface>,
     #[cfg(mhypr_module = "tray")]
     tray_popup: Option<TrayPopupSurface>,
     exit: bool,
@@ -387,6 +604,18 @@ impl App {
 
     fn remove_output(&mut self, output: &wl_output::WlOutput) {
         self.clear_tray_hover();
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
         self.close_tray_popup();
         self.bars.retain(|bar| &bar.output != output);
     }
@@ -405,7 +634,7 @@ impl App {
     fn tray_hover_timeout(&self) -> Option<Duration> {
         let hover = self.tray_hover.as_ref()?;
         if self.tooltip.as_ref().is_some_and(|tooltip| {
-            tooltip.bar_index == hover.bar_index && tooltip.item_index == hover.item_index
+            tooltip.bar_index == hover.bar_index && tooltip.item_index == Some(hover.item_index)
         }) {
             return None;
         }
@@ -489,7 +718,122 @@ impl App {
 
     fn clear_tray_hover(&mut self) {
         self.tray_hover = None;
+        if self
+            .tooltip
+            .as_ref()
+            .is_some_and(|tooltip| tooltip.item_index.is_some())
+        {
+            self.tooltip = None;
+        }
+    }
+
+    #[cfg(mhypr_module = "layout")]
+    fn clear_layout_tooltip(&mut self) {
+        if self
+            .tooltip
+            .as_ref()
+            .is_some_and(|tooltip| tooltip.item_index.is_none())
+        {
+            self.tooltip = None;
+        }
+    }
+
+    #[cfg(mhypr_module = "layout")]
+    fn update_layout_tooltip(&mut self, qh: &QueueHandle<Self>, bar_index: usize, x: f64) {
+        let Some(bar) = self.bars.get(bar_index) else {
+            self.clear_layout_tooltip();
+            return;
+        };
+        let bar_width = bar.width;
+        let bar_height = bar.height as i32;
+        let output = bar.output.clone();
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar_width, workspace_visible, &self.config, &self.modules)
+        else {
+            self.clear_layout_tooltip();
+            return;
+        };
+        if hit.name != "layout" {
+            self.clear_layout_tooltip();
+            return;
+        }
+
+        let Some(view) = self.modules.view("layout") else {
+            self.clear_layout_tooltip();
+            return;
+        };
+        let ModuleVisual::Layout(layout) = view.visual else {
+            self.clear_layout_tooltip();
+            return;
+        };
+        let text = layout.tooltip;
+        if self.tooltip.as_ref().is_some_and(|tooltip| {
+            tooltip.bar_index == bar_index && tooltip.item_index.is_none() && tooltip.text == text
+        }) {
+            return;
+        }
+
+        let mut style = view.style.clone();
+        style.background = "#202020EE".into();
+        style.font_size = 12.0;
+        style.padding_x = 8;
+        style.padding_y = 5;
+        style.min_width = 0;
+        // Match click popups: keep hover tooltips just 2 px from the bar edge.
+        let offset = 2;
+        let (width, height) = Renderer::tooltip_size(&text, &style);
+        let max_left = bar_width.saturating_sub(width) as i32;
+        let left = (x.round() as i32 - width as i32 / 2).clamp(0, max_left.max(0));
+
         self.tooltip = None;
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-layout-tooltip"),
+            Some(&output),
+        );
+        if self.config.position == "bottom" {
+            layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT);
+            layer.set_margin(
+                0,
+                0,
+                self.config
+                    .margin_bottom
+                    .saturating_add(bar_height)
+                    .saturating_add(offset),
+                left,
+            );
+        } else {
+            layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+            layer.set_margin(
+                self.config
+                    .margin_top
+                    .saturating_add(bar_height)
+                    .saturating_add(offset),
+                0,
+                0,
+                left,
+            );
+        }
+        layer.set_size(width, height);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        // Ignore the bar's reserved exclusive zone; margins already include bar_height + offset.
+        layer.set_exclusive_zone(-1);
+        layer.commit();
+
+        self.tooltip = Some(TooltipSurface {
+            layer,
+            text,
+            style,
+            width,
+            height,
+            configured: false,
+            bar_index,
+            item_index: None,
+        });
     }
 
     fn maybe_show_tray_tooltip(&mut self, qh: &QueueHandle<Self>) {
@@ -500,7 +844,7 @@ impl App {
             return;
         }
         if self.tooltip.as_ref().is_some_and(|tooltip| {
-            tooltip.bar_index == hover.bar_index && tooltip.item_index == hover.item_index
+            tooltip.bar_index == hover.bar_index && tooltip.item_index == Some(hover.item_index)
         }) {
             return;
         }
@@ -559,17 +903,19 @@ impl App {
         }
         layer.set_size(width, height);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_exclusive_zone(0);
+        // Ignore the bar's reserved exclusive zone; margins already include bar_height + offset.
+        layer.set_exclusive_zone(-1);
         layer.commit();
 
         self.tooltip = Some(TooltipSurface {
             layer,
             text,
+            style,
             width,
             height,
             configured: false,
             bar_index,
-            item_index,
+            item_index: Some(item_index),
         });
     }
 
@@ -580,16 +926,12 @@ impl App {
         if !tooltip.configured || tooltip.width == 0 || tooltip.height == 0 {
             return;
         }
-        let Some(tray) = self.tray.as_ref() else {
-            return;
-        };
-
         let surface = tooltip.layer.wl_surface().clone();
         let layer = tooltip.layer.clone();
         let width = tooltip.width;
         let height = tooltip.height;
         let text = tooltip.text.clone();
-        let style = tray.tooltip_style().clone();
+        let style = tooltip.style.clone();
         let stride = width as i32 * 4;
 
         let (buffer, canvas) = match self.pool.create_buffer(
@@ -929,12 +1271,1394 @@ impl App {
         }
     }
 
+    #[cfg(mhypr_module = "battery")]
+    fn battery_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.battery_popup.as_ref()?;
+        Some(popup.next_refresh.saturating_duration_since(Instant::now()))
+    }
+
+    #[cfg(mhypr_module = "battery")]
+    fn refresh_battery_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let Some(popup) = self.battery_popup.as_mut() else {
+            return;
+        };
+        if now < popup.next_refresh {
+            return;
+        }
+        if let Err(error) = popup.model.refresh() {
+            eprintln!("mhyprbar: battery popup refresh failed: {error:#}");
+        }
+        popup.next_refresh = now + popup.model.config.refresh_interval();
+        self.draw_battery_popup();
+    }
+
+    #[cfg(mhypr_module = "battery")]
+    fn close_battery_popup(&mut self) {
+        self.battery_popup = None;
+    }
+
+    #[cfg(mhypr_module = "battery")]
+    fn toggle_battery_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.battery_popup.is_some() {
+            self.close_battery_popup();
+            return Ok(true);
+        }
+
+        let Some(model) = BatteryPopupModel::new()? else {
+            return Ok(false);
+        };
+        if !model.config.enabled {
+            return Ok(false);
+        }
+
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("battery popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x = (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-battery-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        let interval = model.config.refresh_interval();
+        self.battery_popup = Some(BatteryPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh: Instant::now() + interval,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "battery")]
+    fn draw_battery_popup(&mut self) {
+        let Some(popup) = self.battery_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let panel_x = popup.panel_x;
+        let panel_y = popup.panel_y;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create battery popup SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) =
+            self.renderer
+                .draw_battery_popup(canvas, width, height, &popup.model, panel_x, panel_y)
+        {
+            eprintln!("mhyprbar: battery popup render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach battery popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "clock")]
+    fn clock_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.clock_popup.as_ref()?;
+        Some(popup.next_refresh.saturating_duration_since(Instant::now()))
+    }
+
+    #[cfg(mhypr_module = "clock")]
+    fn refresh_clock_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let Some(popup) = self.clock_popup.as_mut() else {
+            return;
+        };
+        if now < popup.next_refresh {
+            return;
+        }
+        if let Err(error) = popup.model.refresh() {
+            eprintln!("mhyprbar: clock popup refresh failed: {error:#}");
+        }
+        popup.next_refresh = now + popup.model.config.refresh_interval();
+        self.draw_clock_popup();
+    }
+
+    #[cfg(mhypr_module = "clock")]
+    fn close_clock_popup(&mut self) {
+        self.clock_popup = None;
+    }
+
+    #[cfg(mhypr_module = "clock")]
+    fn toggle_clock_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.clock_popup.is_some() {
+            self.close_clock_popup();
+            return Ok(true);
+        }
+
+        let model = ClockPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("clock popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x = (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-clock-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        let interval = model.config.refresh_interval();
+        self.clock_popup = Some(ClockPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh: Instant::now() + interval,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "clock")]
+    fn draw_clock_popup(&mut self) {
+        let Some(popup) = self.clock_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let panel_x = popup.panel_x;
+        let panel_y = popup.panel_y;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create clock popup SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) =
+            self.renderer
+                .draw_clock_popup(canvas, width, height, &popup.model, panel_x, panel_y)
+        {
+            eprintln!("mhyprbar: clock popup render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach clock popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "cpu")]
+    fn cpu_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.cpu_popup.as_ref()?;
+        Some(popup.next_refresh.saturating_duration_since(Instant::now()))
+    }
+
+    #[cfg(mhypr_module = "cpu")]
+    fn refresh_cpu_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let Some(popup) = self.cpu_popup.as_mut() else {
+            return;
+        };
+        if now < popup.next_refresh {
+            return;
+        }
+        if let Err(error) = popup.model.refresh() {
+            eprintln!("mhyprbar: CPU popup refresh failed: {error:#}");
+        }
+        popup.next_refresh = now + popup.model.config.refresh_interval();
+        self.draw_cpu_popup();
+    }
+
+    #[cfg(mhypr_module = "cpu")]
+    fn close_cpu_popup(&mut self) {
+        self.cpu_popup = None;
+    }
+
+    #[cfg(mhypr_module = "cpu")]
+    fn toggle_cpu_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.cpu_popup.is_some() {
+            self.close_cpu_popup();
+            return Ok(true);
+        }
+
+        let model = CpuPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("CPU popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x = (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-cpu-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        let interval = model.config.refresh_interval();
+        self.cpu_popup = Some(CpuPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh: Instant::now() + interval,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "cpu")]
+    fn toggle_cpu_popup_first(&mut self, qh: &QueueHandle<Self>) -> Result<()> {
+        if self.cpu_popup.is_some() {
+            self.close_cpu_popup();
+            return Ok(());
+        }
+
+        let bar_index = 0usize;
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("no bar output is available")?;
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let mut start = None;
+        let mut end = None;
+        for x in 0..bar.width as i32 {
+            let is_cpu = render::module_at_x(
+                x as f64,
+                bar.width,
+                workspace_visible,
+                &self.config,
+                &self.modules,
+            )
+            .is_some_and(|hit| hit.name == "cpu");
+            if is_cpu {
+                start.get_or_insert(x);
+                end = Some(x + 1);
+            } else if start.is_some() {
+                break;
+            }
+        }
+        let (start, end) = start
+            .zip(end)
+            .context("cpu module is not visible on the first bar")?;
+        let center = (start + end) as f64 / 2.0;
+        let _ = self.toggle_cpu_popup(qh, bar_index, center)?;
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "cpu")]
+    fn draw_cpu_popup(&mut self) {
+        let Some(popup) = self.cpu_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let panel_x = popup.panel_x;
+        let panel_y = popup.panel_y;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create CPU popup SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) =
+            self.renderer
+                .draw_cpu_popup(canvas, width, height, &popup.model, panel_x, panel_y)
+        {
+            eprintln!("mhyprbar: CPU popup render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach CPU popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "gpu")]
+    fn current_gpu_visual(&self) -> Option<crate::modules::gpu::GpuVisual> {
+        let view = self.modules.view("gpu")?;
+        match view.visual {
+            ModuleVisual::Gpu(gpu) => Some(gpu),
+            _ => None,
+        }
+    }
+
+    #[cfg(mhypr_module = "gpu")]
+    fn gpu_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.gpu_popup.as_ref()?;
+        Some(popup.next_refresh.saturating_duration_since(Instant::now()))
+    }
+
+    #[cfg(mhypr_module = "gpu")]
+    fn refresh_gpu_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let due = self
+            .gpu_popup
+            .as_ref()
+            .is_some_and(|popup| now >= popup.next_refresh);
+        if !due {
+            return;
+        }
+
+        let limit = self
+            .gpu_popup
+            .as_ref()
+            .map(|popup| popup.model.config.max_processes)
+            .unwrap_or(8);
+        let fallback_processes = self
+            .gpu_popup
+            .as_ref()
+            .map(|popup| popup.model.processes.clone())
+            .unwrap_or_default();
+
+        let bar_changed = self.modules.force_refresh("gpu");
+        let processes = match self.modules.gpu_processes(limit) {
+            Ok(processes) => processes,
+            Err(error) => {
+                eprintln!("mhyprbar: GPU process refresh failed: {error:#}");
+                fallback_processes
+            }
+        };
+        let Some(visual) = self.current_gpu_visual() else {
+            return;
+        };
+        if let Some(popup) = self.gpu_popup.as_mut() {
+            popup.model.update(&visual, processes);
+            popup.next_refresh = now + popup.model.config.refresh_interval();
+        }
+        if bar_changed {
+            self.draw_all();
+        }
+        self.draw_gpu_popup();
+    }
+
+    #[cfg(mhypr_module = "gpu")]
+    fn close_gpu_popup(&mut self) {
+        self.gpu_popup = None;
+    }
+
+    #[cfg(mhypr_module = "gpu")]
+    fn toggle_gpu_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.gpu_popup.is_some() {
+            self.close_gpu_popup();
+            return Ok(true);
+        }
+
+        let popup_config = GpuPopupConfig::load()?;
+        if !popup_config.enabled {
+            return Ok(false);
+        }
+
+        let bar_changed = self.modules.force_refresh("gpu");
+        let processes = match self.modules.gpu_processes(popup_config.max_processes) {
+            Ok(processes) => processes,
+            Err(error) => {
+                eprintln!("mhyprbar: GPU process read failed: {error:#}");
+                Vec::new()
+            }
+        };
+        let visual = self
+            .current_gpu_visual()
+            .context("GPU module visual is unavailable")?;
+        let model = GpuPopupModel::new(popup_config, &visual, processes);
+        if bar_changed {
+            self.draw_all();
+        }
+
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("GPU popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x = (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-gpu-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        let interval = model.config.refresh_interval();
+        self.gpu_popup = Some(GpuPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh: Instant::now() + interval,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "gpu")]
+    fn draw_gpu_popup(&mut self) {
+        let Some(popup) = self.gpu_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let panel_x = popup.panel_x;
+        let panel_y = popup.panel_y;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create GPU popup SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) =
+            self.renderer
+                .draw_gpu_popup(canvas, width, height, &popup.model, panel_x, panel_y)
+        {
+            eprintln!("mhyprbar: GPU popup render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach GPU popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    fn monitor_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.monitor_popup.as_ref()?;
+        Some(popup.next_refresh.saturating_duration_since(Instant::now()))
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    fn refresh_monitor_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let Some(popup) = self.monitor_popup.as_mut() else {
+            return;
+        };
+        if now < popup.next_refresh {
+            return;
+        }
+        if let Err(error) = popup.model.refresh() {
+            eprintln!("mhyprbar: monitor popup refresh failed: {error:#}");
+        }
+        popup.next_refresh = now + popup.model.config.refresh_interval();
+        if self.modules.force_refresh("monitor") {
+            self.draw_all();
+        }
+        self.draw_monitor_popup();
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    fn close_monitor_popup(&mut self) {
+        self.monitor_context = None;
+        self.monitor_popup = None;
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    fn toggle_monitor_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.monitor_popup.is_some() {
+            self.close_monitor_popup();
+            return Ok(true);
+        }
+
+        let model = MonitorPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+
+        if self.modules.force_refresh("monitor") {
+            self.draw_all();
+        }
+
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("monitor popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x = (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-monitor-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        let interval = model.config.refresh_interval();
+        self.monitor_popup = Some(MonitorPopupSurface {
+            layer,
+            model,
+            output,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh: Instant::now() + interval,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    fn draw_monitor_popup(&mut self) {
+        let Some(popup) = self.monitor_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let panel_x = popup.panel_x;
+        let panel_y = popup.panel_y;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create monitor popup SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) =
+            self.renderer
+                .draw_monitor_popup(canvas, width, height, &popup.model, panel_x, panel_y)
+        {
+            eprintln!("mhyprbar: monitor popup render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach monitor popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    fn open_monitor_context(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Result<()> {
+        let Some(popup) = self.monitor_popup.as_ref() else {
+            return Ok(());
+        };
+        let output = popup.output.clone();
+        let output_w = popup.width.max(1) as f64;
+        let output_h = popup.height.max(1) as f64;
+        let panel_width = 360;
+        let row_height = 30;
+        let panel_height = row_height * 9;
+        let panel_x = (cursor_x + 8.0).clamp(0.0, (output_w - panel_width as f64).max(0.0));
+        let panel_y = (cursor_y + 8.0).clamp(0.0, (output_h - panel_height as f64).max(0.0));
+
+        self.monitor_context = None;
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-monitor-context"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+        self.monitor_context = Some(MonitorContextSurface {
+            layer,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            panel_width,
+            row_height,
+            hovered_action: None,
+        });
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    fn draw_monitor_context(&mut self) {
+        let Some(context) = self.monitor_context.as_ref() else {
+            return;
+        };
+        let Some(popup) = self.monitor_popup.as_ref() else {
+            return;
+        };
+        if !context.configured || context.width == 0 || context.height == 0 {
+            return;
+        }
+        let surface = context.layer.wl_surface().clone();
+        let layer = context.layer.clone();
+        let width = context.width;
+        let height = context.height;
+        let stride = width as i32 * 4;
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create monitor context SHM buffer: {error}");
+                return;
+            }
+        };
+        if let Err(error) = self.renderer.draw_monitor_context(
+            canvas,
+            width,
+            height,
+            &popup.model,
+            context.panel_x,
+            context.panel_y,
+            context.panel_width,
+            context.row_height,
+            context.hovered_action,
+        ) {
+            eprintln!("mhyprbar: monitor context render failed: {error:#}");
+            return;
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach monitor context SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "network")]
+    fn close_network_popup(&mut self) {
+        self.network_popup = None;
+    }
+
+    #[cfg(mhypr_module = "network")]
+    fn toggle_network_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.network_popup.is_some() {
+            self.close_network_popup();
+            return Ok(true);
+        }
+
+        let model = NetworkPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("network popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x =
+            (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "monitor")]
+        self.close_monitor_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-network-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        self.network_popup = Some(NetworkPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "network")]
+    fn draw_network_popup(&mut self) {
+        let Some(popup) = self.network_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create network popup SHM buffer: {error}");
+                return;
+            }
+        };
+        if let Err(error) = self.renderer.draw_network_popup(
+            canvas,
+            width,
+            height,
+            &popup.model,
+            popup.panel_x,
+            popup.panel_y,
+        ) {
+            eprintln!("mhyprbar: network popup render failed: {error:#}");
+            return;
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach network popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "disk")]
+    fn disk_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.disk_popup.as_ref()?;
+        Some(popup.next_refresh.saturating_duration_since(Instant::now()))
+    }
+
+    #[cfg(mhypr_module = "disk")]
+    fn refresh_disk_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let Some(popup) = self.disk_popup.as_mut() else {
+            return;
+        };
+        if now < popup.next_refresh {
+            return;
+        }
+        if let Err(error) = popup.model.refresh() {
+            eprintln!("mhyprbar: disk popup refresh failed: {error:#}");
+        }
+        popup.next_refresh = now + popup.model.config.refresh_interval();
+        self.draw_disk_popup();
+    }
+
+    #[cfg(mhypr_module = "disk")]
+    fn close_disk_popup(&mut self) {
+        self.disk_popup = None;
+    }
+
+    #[cfg(mhypr_module = "disk")]
+    fn toggle_disk_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.disk_popup.is_some() {
+            self.close_disk_popup();
+            return Ok(true);
+        }
+
+        let model = DiskPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("disk popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x = (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-disk-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        let interval = model.config.refresh_interval();
+        self.disk_popup = Some(DiskPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh: Instant::now() + interval,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "disk")]
+    fn draw_disk_popup(&mut self) {
+        let Some(popup) = self.disk_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let panel_x = popup.panel_x;
+        let panel_y = popup.panel_y;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create disk popup SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) =
+            self.renderer
+                .draw_disk_popup(canvas, width, height, &popup.model, panel_x, panel_y)
+        {
+            eprintln!("mhyprbar: disk popup render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach disk popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "memory")]
+    fn memory_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.memory_popup.as_ref()?;
+        Some(popup.next_refresh.saturating_duration_since(Instant::now()))
+    }
+
+    #[cfg(mhypr_module = "memory")]
+    fn refresh_memory_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let Some(popup) = self.memory_popup.as_mut() else {
+            return;
+        };
+        if now < popup.next_refresh {
+            return;
+        }
+        if let Err(error) = popup.model.refresh() {
+            eprintln!("mhyprbar: memory popup refresh failed: {error:#}");
+        }
+        popup.next_refresh = now + popup.model.config.refresh_interval();
+        self.draw_memory_popup();
+    }
+
+    #[cfg(mhypr_module = "memory")]
+    fn close_memory_popup(&mut self) {
+        self.memory_popup = None;
+    }
+
+    #[cfg(mhypr_module = "memory")]
+    fn toggle_memory_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.memory_popup.is_some() {
+            self.close_memory_popup();
+            return Ok(true);
+        }
+
+        let model = MemoryPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("memory popup bar output is unavailable")?;
+        let output = bar.output.clone();
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x = (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar.height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar.height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-memory-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        let interval = model.config.refresh_interval();
+        self.memory_popup = Some(MemoryPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh: Instant::now() + interval,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "memory")]
+    fn draw_memory_popup(&mut self) {
+        let Some(popup) = self.memory_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let panel_x = popup.panel_x;
+        let panel_y = popup.panel_y;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create memory popup SHM buffer: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) =
+            self.renderer
+                .draw_memory_popup(canvas, width, height, &popup.model, panel_x, panel_y)
+        {
+            eprintln!("mhyprbar: memory popup render failed: {error:#}");
+            return;
+        }
+
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach memory popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
     fn reload_config(&mut self) -> Result<()> {
         let config = crate::validate_config().context("reload validation failed")?;
         let background = config.background_rgba()?;
         let mut modules = ModuleManager::load()?;
         modules.refresh_due();
         self.clear_tray_hover();
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
         self.close_tray_popup();
         if let Some(tray) = self.tray.as_mut() {
             tray.reload_config()?;
@@ -1153,7 +2877,10 @@ impl App {
     }
 
     fn activate_workspace(&mut self, bar_index: usize, x: f64) -> bool {
-        let Some(local_workspace) = self.config.workspaces.local_workspace_at_x(x) else {
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(local_workspace) =
+            render::workspace_at_x(x, workspace_visible, &self.config, &self.modules)
+        else {
             return false;
         };
         let Some(monitor) = self.monitor_for_bar(bar_index).cloned() else {
@@ -1241,7 +2968,7 @@ impl App {
         true
     }
 
-    fn activate_module_at(&mut self, bar_index: usize, x: f64, y: f64) {
+    fn activate_module_at(&mut self, _qh: &QueueHandle<Self>, bar_index: usize, x: f64, y: f64) {
         if self.tray_action_at(bar_index, x, y, TrayPointerAction::Primary) {
             return;
         }
@@ -1257,10 +2984,153 @@ impl App {
         };
         let name = hit.name.to_owned();
 
+        #[cfg(mhypr_module = "menu")]
+        if name == "menu" {
+            let origin_y = if self.config.position == "bottom" {
+                y
+            } else {
+                bar.height as f64 + 2.0
+            };
+            match self.modules.activate_at(&name, x, origin_y) {
+                Ok(true) => self.draw_all(),
+                Ok(false) => {}
+                Err(error) => eprintln!("mhyprbar: menu popup action failed: {error:#}"),
+            }
+            return;
+        }
+
+        #[cfg(mhypr_module = "battery")]
+        if name == "battery" {
+            match self.toggle_battery_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: battery popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
+        #[cfg(mhypr_module = "clock")]
+        if name == "clock" {
+            match self.toggle_clock_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: clock popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
+        #[cfg(mhypr_module = "cpu")]
+        if name == "cpu" {
+            match self.toggle_cpu_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: CPU popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
+        #[cfg(mhypr_module = "gpu")]
+        if name == "gpu" {
+            match self.toggle_gpu_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: GPU popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
+        #[cfg(mhypr_module = "monitor")]
+        if name == "monitor" {
+            match self.toggle_monitor_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: monitor popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
+        #[cfg(mhypr_module = "network")]
+        if name == "network" {
+            match self.toggle_network_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: network popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
+        #[cfg(mhypr_module = "disk")]
+        if name == "disk" {
+            match self.toggle_disk_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: disk popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
+        #[cfg(mhypr_module = "memory")]
+        if name == "memory" {
+            match self.toggle_memory_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: memory popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
         match self.modules.activate(&name) {
             Ok(true) => self.draw_all(),
             Ok(false) => {}
             Err(error) => eprintln!("mhyprbar: module {name} action failed: {error:#}"),
+        }
+    }
+
+    fn scroll_module_at(&mut self, bar_index: usize, x: f64, delta: i32) -> bool {
+        if delta == 0 {
+            return false;
+        }
+        let Some(bar) = self.bars.get(bar_index) else {
+            return false;
+        };
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar.width, workspace_visible, &self.config, &self.modules)
+        else {
+            return false;
+        };
+        if hit.name == "tray" {
+            return false;
+        }
+
+        let name = hit.name.to_owned();
+        let direction = if delta < 0 { 1 } else { -1 };
+        match self.modules.scroll(&name, direction) {
+            Ok(true) => {
+                self.draw_all();
+                true
+            }
+            Ok(false) => false,
+            Err(error) => {
+                eprintln!("mhyprbar: module {name} scroll failed: {error:#}");
+                true
+            }
         }
     }
 }
@@ -1322,6 +3192,88 @@ impl LayerShellHandler for App {
             self.tooltip = None;
             return;
         }
+        #[cfg(mhypr_module = "battery")]
+        if self
+            .battery_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.battery_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "clock")]
+        if self
+            .clock_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.clock_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "cpu")]
+        if self
+            .cpu_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.cpu_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "gpu")]
+        if self
+            .gpu_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.gpu_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "monitor")]
+        if self
+            .monitor_context
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.monitor_context = None;
+            return;
+        }
+        #[cfg(mhypr_module = "monitor")]
+        if self
+            .monitor_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.monitor_context = None;
+            self.monitor_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "network")]
+        if self
+            .network_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.network_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "disk")]
+        if self
+            .disk_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.disk_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "memory")]
+        if self
+            .memory_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.memory_popup = None;
+            return;
+        }
         #[cfg(mhypr_module = "tray")]
         if self
             .tray_popup
@@ -1359,6 +3311,132 @@ impl LayerShellHandler for App {
                 tooltip.configured = true;
             }
             self.draw_tooltip();
+            return;
+        }
+        #[cfg(mhypr_module = "battery")]
+        if self
+            .battery_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.battery_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_battery_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "clock")]
+        if self
+            .clock_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.clock_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_clock_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "cpu")]
+        if self
+            .cpu_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.cpu_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_cpu_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "gpu")]
+        if self
+            .gpu_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.gpu_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_gpu_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "monitor")]
+        if self
+            .monitor_context
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.monitor_context.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_monitor_context();
+            return;
+        }
+        #[cfg(mhypr_module = "monitor")]
+        if self
+            .monitor_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.monitor_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_monitor_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "network")]
+        if self
+            .network_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.network_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_network_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "disk")]
+        if self
+            .disk_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.disk_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_disk_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "memory")]
+        if self
+            .memory_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.memory_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_memory_popup();
             return;
         }
         #[cfg(mhypr_module = "tray")]
@@ -1441,6 +3519,465 @@ impl PointerHandler for App {
         events: &[PointerEvent],
     ) {
         for event in events {
+            #[cfg(mhypr_module = "battery")]
+            if self
+                .battery_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                match event.kind {
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let inside = self.battery_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside {
+                            self.close_battery_popup();
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_battery_popup();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "clock")]
+            if self
+                .clock_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                match event.kind {
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let (inside, action) =
+                            self.clock_popup.as_ref().map_or((false, None), |popup| {
+                                let inside = event.position.0 >= popup.panel_x
+                                    && event.position.0
+                                        < popup.panel_x + popup.model.config.width as f64
+                                    && event.position.1 >= popup.panel_y
+                                    && event.position.1
+                                        < popup.panel_y + popup.model.panel_height() as f64;
+                                let action = inside
+                                    .then(|| {
+                                        popup.model.action_at(
+                                            event.position.0 - popup.panel_x,
+                                            event.position.1 - popup.panel_y,
+                                        )
+                                    })
+                                    .flatten();
+                                (inside, action)
+                            });
+
+                        if !inside {
+                            self.close_clock_popup();
+                        } else if let Some(action) = action {
+                            if let Some(popup) = self.clock_popup.as_mut()
+                                && let Err(error) = popup.model.apply_action(action)
+                            {
+                                eprintln!("mhyprbar: clock calendar navigation failed: {error:#}");
+                            }
+                            self.draw_clock_popup();
+                        }
+                    }
+                    PointerEventKind::Axis {
+                        horizontal,
+                        vertical,
+                        ..
+                    } => {
+                        let horizontal = axis_scroll_delta(horizontal);
+                        let vertical = axis_scroll_delta(vertical);
+                        let delta = if horizontal != 0 {
+                            horizontal
+                        } else {
+                            vertical
+                        };
+                        if delta != 0 {
+                            let month_delta = if delta > 0 { 1 } else { -1 };
+                            if let Some(popup) = self.clock_popup.as_mut()
+                                && let Err(error) = popup.model.navigate(month_delta)
+                            {
+                                eprintln!("mhyprbar: clock calendar scroll failed: {error:#}");
+                            }
+                            self.draw_clock_popup();
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_clock_popup();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "cpu")]
+            if self
+                .cpu_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                let mut redraw = false;
+                match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        if let Some(popup) = self.cpu_popup.as_mut() {
+                            let local_y = event.position.1 - popup.panel_y;
+                            let next = if event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                            {
+                                popup.model.process_at(local_y)
+                            } else {
+                                None
+                            };
+                            if popup.model.hovered_process != next {
+                                popup.model.hovered_process = next;
+                                redraw = true;
+                            }
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let inside = self.cpu_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside {
+                            self.close_cpu_popup();
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_cpu_popup();
+                    }
+                    _ => {}
+                }
+                if redraw {
+                    self.draw_cpu_popup();
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "gpu")]
+            if self
+                .gpu_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                match event.kind {
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let inside = self.gpu_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside {
+                            self.close_gpu_popup();
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_gpu_popup();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "monitor")]
+            if self
+                .monitor_context
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                let mut redraw_context = false;
+                match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        if let Some(context) = self.monitor_context.as_mut() {
+                            let inside_x = event.position.0 >= context.panel_x
+                                && event.position.0
+                                    < context.panel_x + context.panel_width as f64;
+                            let inside_y = event.position.1 >= context.panel_y
+                                && event.position.1
+                                    < context.panel_y + (context.row_height * 9) as f64;
+                            let next = if inside_x && inside_y {
+                                Some(
+                                    ((event.position.1 - context.panel_y)
+                                        / context.row_height as f64)
+                                        .floor() as usize,
+                                )
+                            } else {
+                                None
+                            };
+                            if context.hovered_action != next {
+                                context.hovered_action = next;
+                                redraw_context = true;
+                            }
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let action = self.monitor_context.as_ref().and_then(|context| {
+                            let inside_x = event.position.0 >= context.panel_x
+                                && event.position.0
+                                    < context.panel_x + context.panel_width as f64;
+                            let inside_y = event.position.1 >= context.panel_y
+                                && event.position.1
+                                    < context.panel_y + (context.row_height * 9) as f64;
+                            if !(inside_x && inside_y) {
+                                return None;
+                            }
+                            let index = ((event.position.1 - context.panel_y)
+                                / context.row_height as f64)
+                                .floor() as usize;
+                            context_action(index)
+                        });
+                        if let Some(action) = action {
+                            if let Some(popup) = self.monitor_popup.as_mut()
+                                && let Err(error) = popup.model.apply_action(action)
+                            {
+                                eprintln!("mhyprbar: monitor context action failed: {error:#}");
+                            }
+                            if self.modules.force_refresh("monitor") {
+                                self.draw_all();
+                            }
+                            self.monitor_context = None;
+                            self.draw_monitor_popup();
+                        } else {
+                            self.monitor_context = None;
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.monitor_context = None;
+                    }
+                    _ => {}
+                }
+                if redraw_context {
+                    self.draw_monitor_context();
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "monitor")]
+            if self
+                .monitor_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                let mut redraw = false;
+                match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        if let Some(popup) = self.monitor_popup.as_mut() {
+                            let local_y = event.position.1 - popup.panel_y;
+                            let next = if event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                            {
+                                popup.model.row_at(local_y)
+                            } else {
+                                None
+                            };
+                            if popup.model.hovered_row != next {
+                                popup.model.hovered_row = next;
+                                redraw = true;
+                            }
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let (inside, action) =
+                            self.monitor_popup.as_ref().map_or((false, None), |popup| {
+                                let inside = event.position.0 >= popup.panel_x
+                                    && event.position.0
+                                        < popup.panel_x + popup.model.config.width as f64
+                                    && event.position.1 >= popup.panel_y
+                                    && event.position.1
+                                        < popup.panel_y + popup.model.panel_height() as f64;
+                                let action = inside
+                                    .then(|| {
+                                        popup.model.action_at(
+                                            event.position.0 - popup.panel_x,
+                                            event.position.1 - popup.panel_y,
+                                        )
+                                    })
+                                    .flatten();
+                                (inside, action)
+                            });
+
+                        if !inside {
+                            self.close_monitor_popup();
+                        } else if let Some(action) = action {
+                            if let Some(popup) = self.monitor_popup.as_mut()
+                                && let Err(error) = popup.model.apply_action(action)
+                            {
+                                eprintln!("mhyprbar: monitor setting action failed: {error:#}");
+                            }
+                            if self.modules.force_refresh("monitor") {
+                                self.draw_all();
+                            }
+                            redraw = true;
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        let handled = if let Some(popup) = self.monitor_popup.as_mut() {
+                            let inside_x = event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64;
+                            let local_y = event.position.1 - popup.panel_y;
+                            inside_x && popup.model.open_context_at(local_y)
+                        } else {
+                            false
+                        };
+                        if handled {
+                            if let Err(error) =
+                                self.open_monitor_context(qh, event.position.0, event.position.1)
+                            {
+                                eprintln!("mhyprbar: failed to open monitor context: {error:#}");
+                            }
+                            redraw = true;
+                        } else {
+                            self.close_monitor_popup();
+                        }
+                    }
+                    _ => {}
+                }
+                if redraw {
+                    self.draw_monitor_popup();
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "network")]
+            if self
+                .network_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                match event.kind {
+                    PointerEventKind::Press { button, .. }
+                        if button == BTN_LEFT || button == BTN_RIGHT =>
+                    {
+                        let inside = self.network_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside || button == BTN_RIGHT {
+                            self.close_network_popup();
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "disk")]
+            if self
+                .disk_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                let mut redraw = false;
+                match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        if let Some(popup) = self.disk_popup.as_mut() {
+                            let local_y = event.position.1 - popup.panel_y;
+                            let next = if event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                            {
+                                popup.model.row_at(local_y)
+                            } else {
+                                None
+                            };
+                            if popup.model.hovered_row != next {
+                                popup.model.hovered_row = next;
+                                redraw = true;
+                            }
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let inside = self.disk_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside {
+                            self.close_disk_popup();
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_disk_popup();
+                    }
+                    _ => {}
+                }
+                if redraw {
+                    self.draw_disk_popup();
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "memory")]
+            if self
+                .memory_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                let mut redraw = false;
+                match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        if let Some(popup) = self.memory_popup.as_mut() {
+                            let local_y = event.position.1 - popup.panel_y;
+                            let next = if event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                            {
+                                popup.model.process_at(local_y)
+                            } else {
+                                None
+                            };
+                            if popup.model.hovered_process != next {
+                                popup.model.hovered_process = next;
+                                redraw = true;
+                            }
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let inside = self.memory_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside {
+                            self.close_memory_popup();
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_memory_popup();
+                    }
+                    _ => {}
+                }
+                if redraw {
+                    self.draw_memory_popup();
+                }
+                continue;
+            }
+
             #[cfg(mhypr_module = "tray")]
             if self
                 .tray_popup
@@ -1484,6 +4021,8 @@ impl PointerHandler for App {
             match event.kind {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     self.update_tray_hover(index, event.position.0);
+                    #[cfg(mhypr_module = "layout")]
+                    self.update_layout_tooltip(qh, index, event.position.0);
                 }
                 PointerEventKind::Leave { .. } => {
                     if self
@@ -1493,9 +4032,13 @@ impl PointerHandler for App {
                     {
                         self.clear_tray_hover();
                     }
+                    #[cfg(mhypr_module = "layout")]
+                    self.clear_layout_tooltip();
                 }
                 PointerEventKind::Press { button, .. } => {
                     self.clear_tray_hover();
+                    #[cfg(mhypr_module = "layout")]
+                    self.clear_layout_tooltip();
                     match button {
                         BTN_LEFT => {
                             if !self.activate_workspace(index, event.position.0)
@@ -1507,7 +4050,12 @@ impl PointerHandler for App {
                                     true,
                                 )
                             {
-                                self.activate_module_at(index, event.position.0, event.position.1);
+                                self.activate_module_at(
+                                    qh,
+                                    index,
+                                    event.position.0,
+                                    event.position.1,
+                                );
                             }
                         }
                         BTN_RIGHT => {
@@ -1539,6 +4087,8 @@ impl PointerHandler for App {
                     vertical,
                     ..
                 } => {
+                    #[cfg(mhypr_module = "layout")]
+                    self.clear_layout_tooltip();
                     let horizontal = axis_scroll_delta(horizontal);
                     if horizontal != 0 {
                         let _ = self.tray_action_at(
@@ -1550,13 +4100,17 @@ impl PointerHandler for App {
                     }
 
                     let vertical = axis_scroll_delta(vertical);
-                    if vertical != 0 {
-                        let _ = self.tray_action_at(
+                    if vertical != 0
+                        && !self.tray_action_at(
                             index,
                             event.position.0,
                             event.position.1,
                             TrayPointerAction::ScrollVertical(vertical),
-                        );
+                        )
+                    {
+                        let _ = self.scroll_module_at(index, event.position.0, vertical);
+                    } else if vertical == 0 && horizontal != 0 {
+                        let _ = self.scroll_module_at(index, event.position.0, horizontal);
                     }
                 }
                 _ => {}

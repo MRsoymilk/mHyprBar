@@ -1,12 +1,53 @@
-label = "CPU"
+label = ""
 interval_ms = 1000
 warn_percent = 85.0
+
+# CPU SVG scale relative to the bar's available height.
+icon_scale = 0.8
+icon_gap = 4
+
+graph_enabled = true
+graph_width = 50
+graph_height = 0
+step_width = 2
+step_spacing = 1
+text_gap = 6
+show_percent = false
+
+# Low load stays at graph_low. Higher bars extend into graph_mid and graph_high.
+graph_background = "#00000000"
+graph_low = "#F2F2F2"
+graph_mid = "#FFFF00"
+graph_high = "#FF0000"
 
 [style]
 foreground = "#f2f2f2"
 background = "transparent"
 font_family = "sans-serif"
 font_size = 13.0
-padding_x = 8
-padding_y = 4
-min_width = 64
+padding_x = 6
+padding_y = 0
+min_width = 0
+
+[popup]
+enabled = true
+width = 360
+row_height = 24
+padding = 10
+refresh_ms = 1000
+max_processes = 10
+bar_width = 150
+bar_background = "#303030"
+bar_fill = "#F2F2F2"
+border = "#626262"
+separator = "#626262"
+hover_background = "#3A3A3AF0"
+
+[popup.style]
+foreground = "#F2F2F2"
+background = "#202020F2"
+font_family = "sans-serif"
+font_size = 12.0
+padding_x = 0
+padding_y = 0
+min_width = 0

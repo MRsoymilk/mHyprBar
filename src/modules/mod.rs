@@ -10,16 +10,24 @@ pub mod active_window;
 pub mod audio;
 #[cfg(mhypr_module = "battery")]
 pub mod battery;
+#[cfg(mhypr_module = "brightness")]
+pub mod brightness;
 #[cfg(mhypr_module = "clock")]
 pub mod clock;
 #[cfg(mhypr_module = "cpu")]
 pub mod cpu;
 #[cfg(mhypr_module = "disk")]
 pub mod disk;
+#[cfg(mhypr_module = "gpu")]
+pub mod gpu;
+#[cfg(mhypr_module = "layout")]
+pub mod layout;
 #[cfg(mhypr_module = "memory")]
 pub mod memory;
 #[cfg(mhypr_module = "menu")]
 pub mod menu;
+#[cfg(mhypr_module = "monitor")]
+pub mod monitor;
 #[cfg(mhypr_module = "mpris")]
 pub mod mpris;
 #[cfg(mhypr_module = "network")]
@@ -33,13 +41,55 @@ pub struct CompiledModule {
     pub config_file: &'static str,
 }
 
+pub enum ModuleVisual {
+    Text,
+    #[cfg(mhypr_module = "audio")]
+    Audio(audio::AudioVisual),
+    #[cfg(mhypr_module = "battery")]
+    Battery(battery::BatteryVisual),
+    #[cfg(mhypr_module = "brightness")]
+    Brightness(brightness::BrightnessVisual),
+    #[cfg(mhypr_module = "clock")]
+    Clock(clock::ClockVisual),
+    #[cfg(mhypr_module = "layout")]
+    Layout(layout::LayoutVisual),
+    #[cfg(mhypr_module = "cpu")]
+    Cpu(cpu::CpuVisual),
+    #[cfg(mhypr_module = "disk")]
+    Disk(disk::DiskVisual),
+    #[cfg(mhypr_module = "gpu")]
+    Gpu(gpu::GpuVisual),
+    #[cfg(mhypr_module = "monitor")]
+    Monitor(monitor::MonitorVisual),
+    #[cfg(mhypr_module = "memory")]
+    Memory(memory::MemoryVisual),
+    #[cfg(mhypr_module = "network")]
+    Network(network::NetworkVisual),
+}
+
 pub(super) trait StatusModule {
     fn name(&self) -> &'static str;
     fn interval(&self) -> Option<Duration>;
     fn style(&self) -> &ModuleStyle;
     fn sample(&mut self) -> Result<String>;
+    fn visual(&self) -> ModuleVisual {
+        ModuleVisual::Text
+    }
+    fn visual_revision(&self) -> u64 {
+        0
+    }
     fn activate(&mut self) -> Result<bool> {
         Ok(false)
+    }
+    fn activate_at(&mut self, _x: f64, _y: f64) -> Result<bool> {
+        self.activate()
+    }
+    fn scroll(&mut self, _direction: i32) -> Result<bool> {
+        Ok(false)
+    }
+    #[cfg(mhypr_module = "gpu")]
+    fn gpu_processes(&mut self, _limit: usize) -> Result<Vec<crate::gpu::GpuProcess>> {
+        Ok(Vec::new())
     }
 }
 
@@ -49,17 +99,20 @@ struct RuntimeModule {
     next_update: Option<Instant>,
     last_error: Option<String>,
     width_override: Option<i32>,
+    visual_revision: u64,
 }
 
 impl RuntimeModule {
     fn new(module: Box<dyn StatusModule>) -> Self {
         let text = module.name().to_uppercase();
+        let visual_revision = module.visual_revision();
         Self {
             module,
             text,
             next_update: Some(Instant::now()),
             last_error: None,
             width_override: None,
+            visual_revision,
         }
     }
 
@@ -78,11 +131,14 @@ impl RuntimeModule {
         let changed = match self.module.sample() {
             Ok(text) => {
                 self.last_error = None;
+                let visual_revision = self.module.visual_revision();
+                let visual_changed = visual_revision != self.visual_revision;
+                self.visual_revision = visual_revision;
                 if text != self.text {
                     self.text = text;
                     true
                 } else {
-                    false
+                    visual_changed
                 }
             }
             Err(error) => {
@@ -110,6 +166,7 @@ pub struct ModuleView<'a> {
     pub text: &'a str,
     pub style: &'a ModuleStyle,
     pub width_override: Option<i32>,
+    pub visual: ModuleVisual,
 }
 
 pub struct ModuleManager {
@@ -125,14 +182,22 @@ impl ModuleManager {
             RuntimeModule::new(Box::new(active_window::ActiveWindowModule::load()?)),
             #[cfg(mhypr_module = "clock")]
             RuntimeModule::new(Box::new(clock::ClockModule::load()?)),
+            #[cfg(mhypr_module = "layout")]
+            RuntimeModule::new(Box::new(layout::LayoutModule::load()?)),
             #[cfg(mhypr_module = "cpu")]
             RuntimeModule::new(Box::new(cpu::CpuModule::load()?)),
+            #[cfg(mhypr_module = "gpu")]
+            RuntimeModule::new(Box::new(gpu::GpuModule::load()?)),
+            #[cfg(mhypr_module = "monitor")]
+            RuntimeModule::new(Box::new(monitor::MonitorModule::load()?)),
             #[cfg(mhypr_module = "memory")]
             RuntimeModule::new(Box::new(memory::MemoryModule::load()?)),
             #[cfg(mhypr_module = "network")]
             RuntimeModule::new(Box::new(network::NetworkModule::load()?)),
             #[cfg(mhypr_module = "audio")]
             RuntimeModule::new(Box::new(audio::AudioModule::load()?)),
+            #[cfg(mhypr_module = "brightness")]
+            RuntimeModule::new(Box::new(brightness::BrightnessModule::load()?)),
             #[cfg(mhypr_module = "mpris")]
             RuntimeModule::new(Box::new(mpris::MprisModule::load()?)),
             #[cfg(mhypr_module = "disk")]
@@ -189,10 +254,60 @@ impl ModuleManager {
     }
 
     pub fn activate(&mut self, name: &str) -> Result<bool> {
-        self.modules
+        let Some(module) = self
+            .modules
             .iter_mut()
             .find(|module| module.module.name() == name)
-            .map_or(Ok(false), |module| module.module.activate())
+        else {
+            return Ok(false);
+        };
+        let handled = module.module.activate()?;
+        if handled {
+            module.refresh_now(Instant::now());
+        }
+        Ok(handled)
+    }
+
+    pub fn activate_at(&mut self, name: &str, x: f64, y: f64) -> Result<bool> {
+        let Some(module) = self
+            .modules
+            .iter_mut()
+            .find(|module| module.module.name() == name)
+        else {
+            return Ok(false);
+        };
+        let handled = module.module.activate_at(x, y)?;
+        if handled {
+            module.refresh_now(Instant::now());
+        }
+        Ok(handled)
+    }
+
+    pub fn scroll(&mut self, name: &str, direction: i32) -> Result<bool> {
+        let Some(module) = self
+            .modules
+            .iter_mut()
+            .find(|module| module.module.name() == name)
+        else {
+            return Ok(false);
+        };
+        let handled = module.module.scroll(direction)?;
+        if handled {
+            module.refresh_now(Instant::now());
+        }
+        Ok(handled)
+    }
+
+    #[cfg(mhypr_module = "gpu")]
+    pub fn gpu_processes(&mut self, limit: usize) -> Result<Vec<crate::gpu::GpuProcess>> {
+        let Some(module) = self
+            .modules
+            .iter_mut()
+            .find(|module| module.module.name() == "gpu")
+        else {
+            return Ok(Vec::new());
+        };
+        module.module.gpu_processes(limit)
     }
 
     pub fn view(&self, name: &str) -> Option<ModuleView<'_>> {
@@ -203,6 +318,7 @@ impl ModuleManager {
                 text: &module.text,
                 style: module.module.style(),
                 width_override: module.width_override,
+                visual: module.module.visual(),
             })
     }
 }
@@ -224,10 +340,25 @@ pub fn compiled() -> Vec<CompiledModule> {
             name: clock::NAME,
             config_file: clock::CONFIG_FILE,
         },
+        #[cfg(mhypr_module = "layout")]
+        CompiledModule {
+            name: layout::NAME,
+            config_file: layout::CONFIG_FILE,
+        },
         #[cfg(mhypr_module = "cpu")]
         CompiledModule {
             name: cpu::NAME,
             config_file: cpu::CONFIG_FILE,
+        },
+        #[cfg(mhypr_module = "gpu")]
+        CompiledModule {
+            name: gpu::NAME,
+            config_file: gpu::CONFIG_FILE,
+        },
+        #[cfg(mhypr_module = "monitor")]
+        CompiledModule {
+            name: monitor::NAME,
+            config_file: monitor::CONFIG_FILE,
         },
         #[cfg(mhypr_module = "memory")]
         CompiledModule {
@@ -243,6 +374,11 @@ pub fn compiled() -> Vec<CompiledModule> {
         CompiledModule {
             name: audio::NAME,
             config_file: audio::CONFIG_FILE,
+        },
+        #[cfg(mhypr_module = "brightness")]
+        CompiledModule {
+            name: brightness::NAME,
+            config_file: brightness::CONFIG_FILE,
         },
         #[cfg(mhypr_module = "mpris")]
         CompiledModule {

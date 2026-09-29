@@ -1,0 +1,40 @@
+interval_ms = 1000
+
+icon_scale = 0.72
+icon_gap = 4
+topology_width = 26
+topology_height = 18
+dot_size = 4
+dot_color = "#A0A0A0"
+focused_dot_color = "#7CFC8A"
+
+[style]
+foreground = "#F2F2F2"
+background = "transparent"
+font_family = "sans-serif"
+font_size = 10.0
+padding_x = 5
+padding_y = 0
+min_width = 0
+
+[popup]
+enabled = true
+width = 560
+padding = 12
+title_height = 32
+row_height = 48
+control_height = 26
+refresh_ms = 1000
+border = "#3C414A"
+separator = "#353A42"
+selected_background = "#203728"
+hover_background = "#3A4048"
+
+[popup.style]
+foreground = "#F2F2F2"
+background = "#17191DEB"
+font_family = "sans-serif"
+font_size = 12.0
+padding_x = 0
+padding_y = 0
+min_width = 0

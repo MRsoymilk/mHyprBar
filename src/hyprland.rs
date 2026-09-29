@@ -20,9 +20,39 @@ struct MonitorJson {
     #[serde(default)]
     y: i32,
     #[serde(default)]
+    width: i32,
+    #[serde(default)]
     height: i32,
+    #[serde(rename = "refreshRate", default)]
+    refresh_rate: f64,
+    #[serde(default = "default_monitor_scale")]
+    scale: f64,
+    #[serde(default)]
+    focused: bool,
+    #[serde(default)]
+    disabled: bool,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    make: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    serial: String,
+    #[serde(rename = "dpmsStatus", default = "default_true")]
+    dpms_status: bool,
+    #[serde(rename = "availableModes", default)]
+    available_modes: Vec<String>,
     #[serde(rename = "activeWorkspace")]
     active_workspace: WorkspaceRefJson,
+}
+
+fn default_monitor_scale() -> f64 {
+    1.0
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -57,6 +87,28 @@ struct WorkspaceJson {
     monitor: String,
 }
 
+#[cfg(mhypr_module = "layout")]
+#[derive(Clone, Debug, Deserialize)]
+struct ActiveWorkspaceJson {
+    id: i32,
+    #[serde(rename = "tiledLayout", default)]
+    tiled_layout: String,
+}
+
+#[cfg(mhypr_module = "layout")]
+#[derive(Clone, Debug, Deserialize)]
+struct ClientWorkspaceJson {
+    id: i32,
+}
+
+#[cfg(mhypr_module = "layout")]
+#[derive(Clone, Debug, Deserialize)]
+struct ClientJson {
+    #[serde(default)]
+    floating: bool,
+    workspace: ClientWorkspaceJson,
+}
+
 #[derive(Clone, Debug)]
 pub struct MonitorState {
     pub id: i32,
@@ -65,6 +117,51 @@ pub struct MonitorState {
     pub y: i32,
     pub height: i32,
     pub active_workspace: i32,
+}
+
+#[cfg(mhypr_module = "monitor")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MonitorInfo {
+    pub id: i32,
+    pub name: String,
+    pub description: String,
+    pub make: String,
+    pub model: String,
+    pub serial: String,
+    pub width: i32,
+    pub height: i32,
+    pub refresh_rate: f64,
+    pub x: i32,
+    pub y: i32,
+    pub scale: f64,
+    pub focused: bool,
+    pub dpms_status: bool,
+    pub active_workspace: i32,
+    pub available_modes: Vec<String>,
+}
+
+#[cfg(mhypr_module = "monitor")]
+impl MonitorInfo {
+    pub fn logical_width(&self) -> f64 {
+        self.width.max(1) as f64 / self.scale.max(0.001)
+    }
+
+    pub fn logical_height(&self) -> f64 {
+        self.height.max(1) as f64 / self.scale.max(0.001)
+    }
+
+    pub fn mode_string(&self) -> String {
+        format!(
+            "{}x{}@{:.3}",
+            self.width.max(1),
+            self.height.max(1),
+            self.refresh_rate.max(1.0)
+        )
+    }
+
+    pub fn position_string(&self) -> String {
+        format!("{}x{}", self.x, self.y)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -140,6 +237,122 @@ pub fn active_window() -> Result<ActiveWindow> {
         class: window.class,
         title: window.title,
     })
+}
+
+#[cfg(mhypr_module = "layout")]
+pub fn active_layout() -> Result<String> {
+    let raw = request("j/activeworkspace")?;
+    let workspace: ActiveWorkspaceJson =
+        serde_json::from_str(raw.trim()).context("invalid Hyprland activeworkspace JSON")?;
+
+    let clients_raw = request("j/clients")?;
+    let clients: Vec<ClientJson> =
+        serde_json::from_str(clients_raw.trim()).context("invalid Hyprland clients JSON")?;
+    let workspace_clients = clients
+        .iter()
+        .filter(|client| client.workspace.id == workspace.id)
+        .collect::<Vec<_>>();
+
+    if !workspace_clients.is_empty() && workspace_clients.iter().all(|client| client.floating) {
+        return Ok("floating".into());
+    }
+
+    if workspace.tiled_layout.trim().is_empty() {
+        Ok("unknown".into())
+    } else {
+        Ok(workspace.tiled_layout)
+    }
+}
+
+#[cfg(mhypr_module = "layout")]
+pub fn set_active_layout(layout: &str) -> Result<()> {
+    ensure_layout_name(layout)?;
+    let layout = lua_quote(layout);
+    let lua = format!(
+        "local w=hl.get_active_workspace(); if w then if w.special then hl.workspace_rule({{ workspace=tostring(w.name), layout={layout} }}) else hl.workspace_rule({{ workspace=\"name:\" .. tostring(w.name), layout={layout} }}) end end"
+    );
+    let response = request(&format!("eval {lua}"))?;
+    if !command_succeeded(&response) {
+        bail!("Hyprland rejected layout request: {}", response.trim());
+    }
+    Ok(())
+}
+
+#[cfg(mhypr_module = "layout")]
+fn ensure_layout_name(layout: &str) -> Result<()> {
+    if layout.is_empty()
+        || !layout
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.'))
+    {
+        bail!("invalid Hyprland layout name");
+    }
+    Ok(())
+}
+
+#[cfg(mhypr_module = "monitor")]
+pub fn monitor_infos() -> Result<Vec<MonitorInfo>> {
+    let monitors: Vec<MonitorJson> = serde_json::from_str(request("j/monitors")?.trim())
+        .context("invalid Hyprland monitors JSON")?;
+    let mut monitors = monitors
+        .into_iter()
+        .filter(|monitor| !monitor.disabled)
+        .map(|monitor| MonitorInfo {
+            id: monitor.id,
+            name: monitor.name,
+            description: monitor.description,
+            make: monitor.make,
+            model: monitor.model,
+            serial: monitor.serial,
+            width: monitor.width,
+            height: monitor.height,
+            refresh_rate: monitor.refresh_rate,
+            x: monitor.x,
+            y: monitor.y,
+            scale: monitor.scale,
+            focused: monitor.focused,
+            dpms_status: monitor.dpms_status,
+            active_workspace: monitor.active_workspace.id,
+            available_modes: monitor.available_modes,
+        })
+        .collect::<Vec<_>>();
+    monitors.sort_by_key(|monitor| monitor.id);
+    Ok(monitors)
+}
+
+#[cfg(mhypr_module = "monitor")]
+pub fn focus_monitor(name: &str) -> Result<()> {
+    let monitor = lua_quote(name);
+    let response = request(&format!(
+        "eval hl.dispatch(hl.dsp.focus({{ monitor = {monitor} }}))"
+    ))?;
+    if !command_succeeded(&response) {
+        bail!(
+            "Hyprland rejected monitor focus request: {}",
+            response.trim()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(mhypr_module = "monitor")]
+pub fn configure_monitor(name: &str, mode: &str, position: &str, scale: f64) -> Result<()> {
+    if !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
+        bail!("invalid monitor scale");
+    }
+    let output = lua_quote(name);
+    let mode = lua_quote(mode);
+    let position = lua_quote(position);
+    let response = request(&format!(
+        "eval hl.monitor({{ output = {output}, mode = {mode}, position = {position}, scale = {scale:.3} }})"
+    ))?;
+    if !command_succeeded(&response) {
+        bail!(
+            "Hyprland rejected monitor configuration: {}",
+            response.trim()
+        );
+    }
+    Ok(())
 }
 
 pub fn event_stream() -> Result<UnixStream> {

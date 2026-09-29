@@ -1,6 +1,6 @@
 interface = "auto"
 interval_ms = 1000
-show_interface = true
+show_interface = false
 show_rates = true
 
 [style]
@@ -10,4 +10,24 @@ font_family = "sans-serif"
 font_size = 13.0
 padding_x = 8
 padding_y = 4
-min_width = 180
+min_width = 76
+
+[popup]
+enabled = true
+width = 620
+padding = 12
+title_height = 32
+row_height = 58
+refresh_ms = 1500
+border = "#3C414A"
+separator = "#353A42"
+active_background = "#203728"
+
+[popup.style]
+foreground = "#F2F2F2"
+background = "#17191DEB"
+font_family = "sans-serif"
+font_size = 12.0
+padding_x = 0
+padding_y = 0
+min_width = 0

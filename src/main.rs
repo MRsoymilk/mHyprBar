@@ -1,7 +1,25 @@
+#[cfg(mhypr_module = "battery")]
+mod battery_popup;
+#[cfg(mhypr_module = "clock")]
+mod clock_popup;
 mod config;
+#[cfg(mhypr_module = "cpu")]
+mod cpu_popup;
+#[cfg(mhypr_module = "disk")]
+mod disk_popup;
+#[cfg(mhypr_module = "gpu")]
+mod gpu;
+#[cfg(mhypr_module = "gpu")]
+mod gpu_popup;
 mod hyprland;
 mod ipc;
+#[cfg(mhypr_module = "memory")]
+mod memory_popup;
 mod modules;
+#[cfg(mhypr_module = "monitor")]
+mod monitor_popup;
+#[cfg(mhypr_module = "network")]
+mod network_popup;
 mod render;
 mod tray;
 #[cfg(mhypr_module = "tray")]
@@ -24,6 +42,7 @@ fn print_help() {
     println!("  mhyprbar                 run the bar");
     println!("  mhyprbar --reload        reload the running bar configuration");
     println!("  mhyprbar --status        show status of the running bar");
+    println!("  mhyprbar --cpu-popup     toggle CPU details popup (debug)");
     println!("  mhyprbar --tray-list     list current tray items");
     println!("  mhyprbar --tray-menu N   open tray item N menu (debug)");
     println!("  mhyprbar --tray-tooltip N show tray item N tooltip (debug)");
@@ -76,6 +95,7 @@ fn run() -> Result<()> {
         Some("-V" | "--version") => println!("mhyprbar {}", env!("CARGO_PKG_VERSION")),
         Some("--reload") => run_control(ipc::Request::Reload)?,
         Some("--status") => run_control(ipc::Request::Status)?,
+        Some("--cpu-popup") => run_control(ipc::Request::CpuPopupToggle)?,
         Some("--tray-list") => run_control(ipc::Request::TrayList)?,
         Some("--tray-menu") => {
             let index = args
