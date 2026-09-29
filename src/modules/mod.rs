@@ -18,6 +18,8 @@ pub mod clock;
 pub mod cpu;
 #[cfg(mhypr_module = "disk")]
 pub mod disk;
+#[cfg(mhypr_module = "gpu")]
+pub mod gpu;
 #[cfg(mhypr_module = "layout")]
 pub mod layout;
 #[cfg(mhypr_module = "memory")]
@@ -53,6 +55,8 @@ pub enum ModuleVisual {
     Cpu(cpu::CpuVisual),
     #[cfg(mhypr_module = "disk")]
     Disk(disk::DiskVisual),
+    #[cfg(mhypr_module = "gpu")]
+    Gpu(gpu::GpuVisual),
     #[cfg(mhypr_module = "memory")]
     Memory(memory::MemoryVisual),
 }
@@ -169,6 +173,8 @@ impl ModuleManager {
             RuntimeModule::new(Box::new(layout::LayoutModule::load()?)),
             #[cfg(mhypr_module = "cpu")]
             RuntimeModule::new(Box::new(cpu::CpuModule::load()?)),
+            #[cfg(mhypr_module = "gpu")]
+            RuntimeModule::new(Box::new(gpu::GpuModule::load()?)),
             #[cfg(mhypr_module = "memory")]
             RuntimeModule::new(Box::new(memory::MemoryModule::load()?)),
             #[cfg(mhypr_module = "network")]
@@ -301,6 +307,11 @@ pub fn compiled() -> Vec<CompiledModule> {
         CompiledModule {
             name: cpu::NAME,
             config_file: cpu::CONFIG_FILE,
+        },
+        #[cfg(mhypr_module = "gpu")]
+        CompiledModule {
+            name: gpu::NAME,
+            config_file: gpu::CONFIG_FILE,
         },
         #[cfg(mhypr_module = "memory")]
         CompiledModule {

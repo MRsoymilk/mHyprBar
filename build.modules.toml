@@ -10,6 +10,7 @@ active_window = true
 clock = true
 layout = true
 cpu = true
+gpu = true
 memory = true
 network = true
 # Optional integrations. Enable only when the corresponding desktop service/tool is available.

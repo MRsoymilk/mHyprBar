@@ -1730,6 +1730,10 @@ impl Renderer {
                 ModuleVisual::Disk(disk) => {
                     self.draw_disk(canvas, width, height, rect, &view, disk)?;
                 }
+                #[cfg(mhypr_module = "gpu")]
+                ModuleVisual::Gpu(gpu) => {
+                    self.draw_gpu(canvas, width, height, rect, &view, gpu)?;
+                }
                 #[cfg(mhypr_module = "memory")]
                 ModuleVisual::Memory(memory) => {
                     self.draw_memory(canvas, width, height, rect, &view, memory)?;
@@ -2391,6 +2395,105 @@ impl Renderer {
         Ok(())
     }
 
+    #[cfg(mhypr_module = "gpu")]
+    fn draw_gpu(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        gpu: &crate::modules::gpu::GpuVisual,
+    ) -> Result<()> {
+        let style = view.style;
+        let padding_x = style.padding_x.max(0);
+        let padding_y = style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(2);
+        let gap = gpu.row_gap.min(content_h.saturating_sub(2)).max(0);
+        let row_h = ((content_h - gap) / 2).max(1);
+        let label_w = estimate_text_width("M", style).max(1);
+        let percent_w = estimate_text_width("100%", style).max(1);
+        let start_x = rect.x.saturating_add(padding_x);
+        let bar_x = start_x.saturating_add(label_w).saturating_add(gpu.text_gap);
+        let percent_x = bar_x
+            .saturating_add(gpu.bar_width)
+            .saturating_add(gpu.text_gap);
+
+        for (index, (label, percent, fill)) in [
+            ("G", gpu.utilization_percent, gpu.utilization_fill),
+            ("M", gpu.memory_percent, gpu.memory_fill),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row_y = rect
+                .y
+                .saturating_add(padding_y)
+                .saturating_add(index as i32 * (row_h + gap));
+
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: start_x,
+                    y: row_y,
+                    w: label_w,
+                    h: row_h,
+                },
+                label,
+                style,
+                0,
+                0,
+            )?;
+
+            let bar_h = gpu.bar_height.min(row_h).max(1);
+            let bar_rect = Rect {
+                x: bar_x,
+                y: row_y.saturating_add((row_h - bar_h) / 2),
+                w: gpu.bar_width,
+                h: bar_h,
+            };
+            fill_rect(canvas, width, height, bar_rect, gpu.bar_background);
+            if let Some(percent) = percent {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: bar_rect.x,
+                        y: bar_rect.y,
+                        w: ((bar_rect.w as f32 * percent.clamp(0.0, 100.0) / 100.0).round() as i32)
+                            .clamp(0, bar_rect.w),
+                        h: bar_rect.h,
+                    },
+                    fill,
+                );
+            }
+
+            let text = percent
+                .map(|value| format!("{value:.0}%"))
+                .unwrap_or_else(|| "--%".into());
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: percent_x,
+                    y: row_y,
+                    w: percent_w,
+                    h: row_h,
+                },
+                &text,
+                style,
+                0,
+                0,
+            )?;
+        }
+
+        Ok(())
+    }
+
     #[cfg(mhypr_module = "memory")]
     fn draw_memory(
         &mut self,
@@ -2875,6 +2978,22 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
             0
         };
         let content = graph_width.saturating_add(gap).saturating_add(text_width);
+        return style
+            .min_width
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
+    }
+
+    #[cfg(mhypr_module = "gpu")]
+    if let ModuleVisual::Gpu(gpu) = &view.visual {
+        let style = view.style;
+        let label_width = estimate_text_width("M", style);
+        let percent_width = estimate_text_width("100%", style);
+        let content = label_width
+            .saturating_add(gpu.text_gap)
+            .saturating_add(gpu.bar_width)
+            .saturating_add(gpu.text_gap)
+            .saturating_add(percent_width);
         return style
             .min_width
             .max(content.saturating_add(style.padding_x.saturating_mul(2)))
