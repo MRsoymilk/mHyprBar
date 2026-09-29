@@ -1,4 +1,10 @@
-use std::{fs, time::Duration};
+use std::{
+    fs,
+    io::Write,
+    process::{Command, Stdio},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -9,6 +15,8 @@ use crate::config::{self, ModuleStyle};
 pub const NAME: &str = "cpu";
 pub const CONFIG_FILE: &str = "modules/cpu.toml";
 
+const ICON_CPU_SVG: &[u8] = include_bytes!("../../res/cpu/cpu.svg");
+
 #[derive(Debug, Deserialize)]
 struct CpuConfig {
     #[serde(default = "default_label")]
@@ -17,6 +25,10 @@ struct CpuConfig {
     interval_ms: u64,
     #[serde(default = "default_warn_percent")]
     warn_percent: f32,
+    #[serde(default = "default_icon_scale")]
+    icon_scale: f32,
+    #[serde(default = "default_icon_gap")]
+    icon_gap: i32,
     #[serde(default = "default_graph_enabled")]
     graph_enabled: bool,
     #[serde(default = "default_graph_width")]
@@ -44,8 +56,20 @@ struct CpuConfig {
 }
 
 #[derive(Clone)]
+struct CpuIcon {
+    pixels: Arc<[u8]>,
+    width: i32,
+    height: i32,
+}
+
+#[derive(Clone)]
 pub struct CpuVisual {
     pub history: Vec<f32>,
+    pub icon_scale: f32,
+    pub icon_gap: i32,
+    pub icon_pixels: Arc<[u8]>,
+    pub icon_width: i32,
+    pub icon_height: i32,
     pub graph_enabled: bool,
     pub graph_width: i32,
     pub graph_height: i32,
@@ -63,6 +87,7 @@ pub struct CpuModule {
     config: CpuConfig,
     previous: Option<(u64, u64)>,
     history: Vec<f32>,
+    icon: CpuIcon,
     graph_background: [u8; 4],
     graph_low: [u8; 4],
     graph_mid: [u8; 4],
@@ -81,6 +106,11 @@ impl CpuModule {
             (0.0..=100.0).contains(&config.warn_percent),
             "cpu warn_percent must be between 0 and 100"
         );
+        ensure!(
+            config.icon_scale.is_finite() && (0.1..=1.0).contains(&config.icon_scale),
+            "cpu icon_scale must be in 0.1..=1.0"
+        );
+        ensure!(config.icon_gap >= 0, "cpu icon_gap must not be negative");
         ensure!(
             config.graph_width > 0,
             "cpu graph_width must be greater than zero"
@@ -105,6 +135,7 @@ impl CpuModule {
         config.style.validate()?;
         let _ = crate::cpu_popup::CpuPopupConfig::load()?;
 
+        let icon = rasterize_svg("cpu.svg", ICON_CPU_SVG)?;
         let graph_background = config::parse_rgba(&config.graph_background)?;
         let graph_low = config::parse_rgba(&config.graph_low)?;
         let graph_mid = config::parse_rgba(&config.graph_mid)?;
@@ -114,6 +145,7 @@ impl CpuModule {
             config,
             previous: None,
             history: Vec::new(),
+            icon,
             graph_background,
             graph_low,
             graph_mid,
@@ -215,6 +247,11 @@ impl StatusModule for CpuModule {
     fn visual(&self) -> ModuleVisual {
         ModuleVisual::Cpu(CpuVisual {
             history: self.history.clone(),
+            icon_scale: self.config.icon_scale,
+            icon_gap: self.config.icon_gap,
+            icon_pixels: Arc::clone(&self.icon.pixels),
+            icon_width: self.icon.width,
+            icon_height: self.icon.height,
             graph_enabled: self.config.graph_enabled,
             graph_width: self.config.graph_width,
             graph_height: self.config.graph_height,
@@ -230,12 +267,121 @@ impl StatusModule for CpuModule {
     }
 }
 
+fn rasterize_svg(name: &str, svg_bytes: &[u8]) -> Result<CpuIcon> {
+    const RASTER_SIZE: i32 = 96;
+
+    let mut svg = Command::new("rsvg-convert")
+        .arg("--width")
+        .arg(RASTER_SIZE.to_string())
+        .arg("--height")
+        .arg(RASTER_SIZE.to_string())
+        .arg("--keep-aspect-ratio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to launch rsvg-convert for {name}"))?;
+
+    let stdout = svg
+        .stdout
+        .take()
+        .context("failed to capture rsvg-convert output")?;
+    let mut svg_stdin = svg
+        .stdin
+        .take()
+        .context("failed to open rsvg-convert stdin")?;
+
+    let magick = Command::new("magick")
+        .arg("png:-")
+        .arg("rgba:-")
+        .stdin(Stdio::from(stdout))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to launch magick for {name}"))?;
+
+    svg_stdin
+        .write_all(svg_bytes)
+        .with_context(|| format!("failed to feed SVG data for {name}"))?;
+    drop(svg_stdin);
+
+    let status = svg
+        .wait()
+        .with_context(|| format!("failed to wait for rsvg-convert for {name}"))?;
+    let output = magick
+        .wait_with_output()
+        .with_context(|| format!("failed to wait for magick for {name}"))?;
+
+    ensure!(
+        status.success() && output.status.success(),
+        "cpu SVG rasterization failed for {name}"
+    );
+
+    let expected = RASTER_SIZE as usize * RASTER_SIZE as usize * 4;
+    ensure!(
+        output.stdout.len() == expected,
+        "cpu SVG rasterizer returned {} bytes for {RASTER_SIZE}x{RASTER_SIZE}, expected {expected}: {name}",
+        output.stdout.len()
+    );
+
+    crop_transparent_margin(name, &output.stdout, RASTER_SIZE, RASTER_SIZE)
+}
+
+fn crop_transparent_margin(name: &str, pixels: &[u8], width: i32, height: i32) -> Result<CpuIcon> {
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = -1;
+    let mut max_y = -1;
+
+    for y in 0..height {
+        for x in 0..width {
+            let offset = ((y * width + x) * 4) as usize;
+            if pixels[offset + 3] == 0 {
+                continue;
+            }
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    ensure!(
+        max_x >= min_x && max_y >= min_y,
+        "cpu SVG has no visible pixels: {name}"
+    );
+
+    let cropped_width = max_x - min_x + 1;
+    let cropped_height = max_y - min_y + 1;
+    let mut cropped = Vec::with_capacity(cropped_width as usize * cropped_height as usize * 4);
+
+    for y in min_y..=max_y {
+        let start = ((y * width + min_x) * 4) as usize;
+        let end = start + cropped_width as usize * 4;
+        cropped.extend_from_slice(&pixels[start..end]);
+    }
+
+    Ok(CpuIcon {
+        pixels: Arc::from(cropped),
+        width: cropped_width,
+        height: cropped_height,
+    })
+}
+
 fn default_label() -> String {
     String::new()
 }
 
 fn default_interval_ms() -> u64 {
     1_000
+}
+
+fn default_icon_scale() -> f32 {
+    0.8
+}
+
+fn default_icon_gap() -> i32 {
+    4
 }
 
 fn default_warn_percent() -> f32 {

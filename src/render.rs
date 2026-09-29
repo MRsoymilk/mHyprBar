@@ -2487,7 +2487,29 @@ impl Renderer {
         let padding_y = style.padding_y.max(0);
         let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
 
-        let mut cursor_x = rect.x.saturating_add(padding_x);
+        let icon_size = cpu_icon_slot_size(cpu, style, rect.h);
+        let icon_x = rect.x.saturating_add(padding_x);
+        let icon_y = rect
+            .y
+            .saturating_add(padding_y)
+            .saturating_add((content_h - icon_size) / 2);
+        draw_tinted_rgba_mask(
+            canvas,
+            width,
+            height,
+            icon_x,
+            icon_y,
+            icon_size,
+            cpu.icon_width,
+            cpu.icon_height,
+            &cpu.icon_pixels,
+            style.foreground_rgba()?,
+        );
+
+        let has_following = cpu.graph_enabled || !view.text.is_empty();
+        let mut cursor_x = icon_x
+            .saturating_add(icon_size)
+            .saturating_add(if has_following { cpu.icon_gap } else { 0 });
         if cpu.graph_enabled {
             let graph_h = if cpu.graph_height == 0 {
                 content_h
@@ -3103,6 +3125,18 @@ fn group_width(names: &[String], modules: &ModuleManager, bar_height: i32) -> i3
         .fold(0_i32, i32::saturating_add)
 }
 
+#[cfg(mhypr_module = "cpu")]
+fn cpu_icon_slot_size(
+    cpu: &crate::modules::cpu::CpuVisual,
+    style: &ModuleStyle,
+    bar_height: i32,
+) -> i32 {
+    let available = bar_height
+        .saturating_sub(style.padding_y.max(0).saturating_mul(2))
+        .max(1);
+    ((available as f32 * cpu.icon_scale).round() as i32).clamp(1, available)
+}
+
 #[cfg(mhypr_module = "audio")]
 fn audio_icon_slot_size(
     audio: &crate::modules::audio::AudioVisual,
@@ -3287,7 +3321,10 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
         } else {
             0
         };
-        let content = graph_width.saturating_add(gap).saturating_add(text_width);
+        let icon_slot = cpu_icon_slot_size(cpu, style, bar_height);
+        let following = graph_width.saturating_add(gap).saturating_add(text_width);
+        let icon_gap = if following > 0 { cpu.icon_gap } else { 0 };
+        let content = icon_slot.saturating_add(icon_gap).saturating_add(following);
         return style
             .min_width
             .max(content.saturating_add(style.padding_x.saturating_mul(2)))
@@ -3453,6 +3490,7 @@ fn lerp_rgba(from: [u8; 4], to: [u8; 4], t: f32) -> [u8; 4] {
 #[cfg(any(
     mhypr_module = "audio",
     mhypr_module = "brightness",
+    mhypr_module = "cpu",
     mhypr_module = "disk",
     mhypr_module = "gpu",
     mhypr_module = "layout",

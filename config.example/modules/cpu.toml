@@ -2,6 +2,10 @@ label = ""
 interval_ms = 1000
 warn_percent = 85.0
 
+# CPU SVG scale relative to the bar's available height.
+icon_scale = 0.8
+icon_gap = 4
+
 graph_enabled = true
 graph_width = 50
 graph_height = 0
