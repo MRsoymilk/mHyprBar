@@ -134,9 +134,18 @@ pub struct CalendarCell {
     pub today: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockPopupAction {
+    Previous,
+    Today,
+    Next,
+}
+
 pub struct ClockPopupModel {
     pub config: ClockPopupConfig,
     pub now: LocalDateTime,
+    pub view_year: i32,
+    pub view_month: u32,
     pub cells: Vec<CalendarCell>,
 }
 
@@ -144,13 +153,74 @@ impl ClockPopupModel {
     pub fn new() -> Result<Self> {
         let config = ClockPopupConfig::load()?;
         let now = local_datetime()?;
-        let cells = build_calendar(&now)?;
-        Ok(Self { config, now, cells })
+        let view_year = now.year;
+        let view_month = now.month;
+        let cells = build_calendar(view_year, view_month, &now)?;
+        Ok(Self {
+            config,
+            now,
+            view_year,
+            view_month,
+            cells,
+        })
     }
 
     pub fn refresh(&mut self) -> Result<()> {
         self.now = local_datetime()?;
-        self.cells = build_calendar(&self.now)?;
+        self.rebuild_calendar()
+    }
+
+    pub fn navigate_month(&mut self, delta: i32) -> Result<()> {
+        if delta == 0 {
+            return Ok(());
+        }
+        let absolute = self
+            .view_year
+            .saturating_mul(12)
+            .saturating_add(self.view_month as i32 - 1)
+            .saturating_add(delta);
+        self.view_year = absolute.div_euclid(12);
+        self.view_month = (absolute.rem_euclid(12) + 1) as u32;
+        self.rebuild_calendar()
+    }
+
+    pub fn reset_to_current_month(&mut self) -> Result<()> {
+        self.view_year = self.now.year;
+        self.view_month = self.now.month;
+        self.rebuild_calendar()
+    }
+
+    pub fn apply_action(&mut self, action: ClockPopupAction) -> Result<()> {
+        match action {
+            ClockPopupAction::Previous => self.navigate_month(-1),
+            ClockPopupAction::Today => self.reset_to_current_month(),
+            ClockPopupAction::Next => self.navigate_month(1),
+        }
+    }
+
+    pub fn header_action_at(&self, x: f64, y: f64) -> Option<ClockPopupAction> {
+        let top = self.config.padding as f64;
+        let bottom = top + 26.0;
+        if y < top || y >= bottom {
+            return None;
+        }
+
+        let left = self.config.padding as f64;
+        let right = (self.config.width - self.config.padding) as f64;
+        let button_width = 30.0;
+        if x >= left && x < left + button_width {
+            Some(ClockPopupAction::Previous)
+        } else if x >= right - button_width && x < right {
+            Some(ClockPopupAction::Next)
+        } else if x >= left + button_width && x < right - button_width {
+            Some(ClockPopupAction::Today)
+        } else {
+            None
+        }
+    }
+
+    fn rebuild_calendar(&mut self) -> Result<()> {
+        self.cells = build_calendar(self.view_year, self.view_month, &self.now)?;
         Ok(())
     }
 
@@ -165,7 +235,7 @@ impl ClockPopupModel {
     }
 
     pub fn month_title(&self) -> String {
-        format!("{} {}", month_name(self.now.month), self.now.year)
+        format!("{} {}", month_name(self.view_month), self.view_year)
     }
 
     pub fn date_summary(&self) -> String {
@@ -182,15 +252,15 @@ impl ClockPopupModel {
     }
 }
 
-fn build_calendar(now: &LocalDateTime) -> Result<Vec<CalendarCell>> {
-    let first_sunday_based = weekday_for_date(now.year, now.month, 1)?;
+fn build_calendar(year: i32, month: u32, now: &LocalDateTime) -> Result<Vec<CalendarCell>> {
+    let first_sunday_based = weekday_for_date(year, month, 1)?;
     let first_monday_based = (first_sunday_based + 6) % 7;
-    let current_days = days_in_month(now.year, now.month);
+    let current_days = days_in_month(year, month);
 
-    let (prev_year, prev_month) = if now.month == 1 {
-        (now.year - 1, 12)
+    let (prev_year, prev_month) = if month == 1 {
+        (year - 1, 12)
     } else {
-        (now.year, now.month - 1)
+        (year, month - 1)
     };
     let prev_days = days_in_month(prev_year, prev_month);
 
@@ -211,7 +281,7 @@ fn build_calendar(now: &LocalDateTime) -> Result<Vec<CalendarCell>> {
             cells.push(CalendarCell {
                 day: current_index,
                 in_month: true,
-                today: current_index == now.day,
+                today: year == now.year && month == now.month && current_index == now.day,
             });
         } else {
             cells.push(CalendarCell {
@@ -303,21 +373,45 @@ fn default_popup_style() -> ModuleStyle {
 
 #[cfg(test)]
 mod tests {
-    use super::build_calendar;
+    use super::{ClockPopupModel, build_calendar};
     use crate::modules::clock::LocalDateTime;
 
-    #[test]
-    fn calendar_has_42_cells_and_marks_today() {
-        let now = LocalDateTime {
+    fn sample_now() -> LocalDateTime {
+        LocalDateTime {
             year: 2026,
             month: 9,
             day: 28,
             weekday: 1,
             hour: 18,
             minute: 3,
-        };
-        let cells = build_calendar(&now).expect("calendar");
+        }
+    }
+
+    #[test]
+    fn calendar_has_42_cells_and_marks_today() {
+        let now = sample_now();
+        let cells = build_calendar(2026, 9, &now).expect("calendar");
         assert_eq!(cells.len(), 42);
         assert!(cells.iter().any(|cell| cell.today && cell.day == 28));
+
+        let october = build_calendar(2026, 10, &now).expect("october");
+        assert!(!october.iter().any(|cell| cell.today));
+    }
+
+    #[test]
+    fn month_navigation_wraps_year_boundaries() {
+        let mut model = ClockPopupModel {
+            config: Default::default(),
+            now: sample_now(),
+            view_year: 2026,
+            view_month: 12,
+            cells: Vec::new(),
+        };
+        model.navigate_month(1).expect("next month");
+        assert_eq!((model.view_year, model.view_month), (2027, 1));
+        model.navigate_month(-2).expect("previous months");
+        assert_eq!((model.view_year, model.view_month), (2026, 11));
+        model.reset_to_current_month().expect("current month");
+        assert_eq!((model.view_year, model.view_month), (2026, 9));
     }
 }

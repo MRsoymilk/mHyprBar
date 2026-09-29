@@ -388,16 +388,63 @@ impl Renderer {
         today_style.foreground = cfg.today_foreground.clone();
 
         let mut y = panel.y + pad;
+        let nav_w = 30;
+        let nav_h = 26;
+        let previous_rect = Rect {
+            x: content_x,
+            y,
+            w: nav_w,
+            h: nav_h,
+        };
+        let next_rect = Rect {
+            x: content_x + content_w - nav_w,
+            y,
+            w: nav_w,
+            h: nav_h,
+        };
+        draw_rect_border(canvas, width, height, previous_rect, separator, 1);
+        draw_rect_border(canvas, width, height, next_rect, separator, 1);
+
+        for (button, label) in [(previous_rect, "<"), (next_rect, ">")] {
+            let label_w = estimate_text_width(label, &title_style)
+                .min(button.w)
+                .max(1);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: button.x + (button.w - label_w).max(0) / 2,
+                    y: button.y,
+                    w: label_w,
+                    h: button.h,
+                },
+                label,
+                &title_style,
+                0,
+                0,
+            )?;
+        }
+
+        let title_rect = Rect {
+            x: content_x + nav_w,
+            y,
+            w: (content_w - nav_w * 2).max(1),
+            h: nav_h,
+        };
         let month_title = model.month_title();
+        let month_title_w = estimate_text_width(&month_title, &title_style)
+            .min(title_rect.w)
+            .max(1);
         self.draw_text_content(
             canvas,
             width,
             height,
             Rect {
-                x: content_x,
-                y,
-                w: content_w - 64,
-                h: 26,
+                x: title_rect.x + (title_rect.w - month_title_w).max(0) / 2,
+                y: title_rect.y,
+                w: month_title_w,
+                h: title_rect.h,
             },
             &month_title,
             &title_style,
@@ -405,35 +452,39 @@ impl Renderer {
             0,
         )?;
 
+        let summary_y = y + nav_h;
+        let summary_h = (cfg.header_height - nav_h).max(1);
         let time_text = model.time_text();
-        let time_w = estimate_text_width(&time_text, &title_style).max(1);
-        self.draw_text_content(
-            canvas,
-            width,
-            height,
-            Rect {
-                x: content_x + content_w - time_w,
-                y,
-                w: time_w,
-                h: 26,
-            },
-            &time_text,
-            &title_style,
-            0,
-            0,
-        )?;
-
+        let time_w = estimate_text_width(&time_text, &summary_style)
+            .min(content_w)
+            .max(1);
+        let summary_w = (content_w - time_w - 8).max(1);
         self.draw_text_content(
             canvas,
             width,
             height,
             Rect {
                 x: content_x,
-                y: y + 24,
-                w: content_w,
-                h: cfg.header_height - 24,
+                y: summary_y,
+                w: summary_w,
+                h: summary_h,
             },
             &model.date_summary(),
+            &summary_style,
+            0,
+            0,
+        )?;
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x + content_w - time_w,
+                y: summary_y,
+                w: time_w,
+                h: summary_h,
+            },
+            &time_text,
             &summary_style,
             0,
             0,

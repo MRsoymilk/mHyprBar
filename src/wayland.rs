@@ -2612,16 +2612,56 @@ impl PointerHandler for App {
             {
                 match event.kind {
                     PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
-                        let inside = self.clock_popup.as_ref().is_some_and(|popup| {
-                            event.position.0 >= popup.panel_x
-                                && event.position.0
-                                    < popup.panel_x + popup.model.config.width as f64
-                                && event.position.1 >= popup.panel_y
-                                && event.position.1
-                                    < popup.panel_y + popup.model.panel_height() as f64
-                        });
+                        let (inside, action) =
+                            self.clock_popup.as_ref().map_or((false, None), |popup| {
+                                let inside = event.position.0 >= popup.panel_x
+                                    && event.position.0
+                                        < popup.panel_x + popup.model.config.width as f64
+                                    && event.position.1 >= popup.panel_y
+                                    && event.position.1
+                                        < popup.panel_y + popup.model.panel_height() as f64;
+                                let action = inside
+                                    .then(|| {
+                                        popup.model.header_action_at(
+                                            event.position.0 - popup.panel_x,
+                                            event.position.1 - popup.panel_y,
+                                        )
+                                    })
+                                    .flatten();
+                                (inside, action)
+                            });
+
                         if !inside {
                             self.close_clock_popup();
+                        } else if let Some(action) = action {
+                            if let Some(popup) = self.clock_popup.as_mut()
+                                && let Err(error) = popup.model.apply_action(action)
+                            {
+                                eprintln!("mhyprbar: clock calendar navigation failed: {error:#}");
+                            }
+                            self.draw_clock_popup();
+                        }
+                    }
+                    PointerEventKind::Axis {
+                        horizontal,
+                        vertical,
+                        ..
+                    } => {
+                        let horizontal = axis_scroll_delta(horizontal);
+                        let vertical = axis_scroll_delta(vertical);
+                        let delta = if horizontal != 0 {
+                            horizontal
+                        } else {
+                            vertical
+                        };
+                        if delta != 0 {
+                            let month_delta = if delta > 0 { 1 } else { -1 };
+                            if let Some(popup) = self.clock_popup.as_mut()
+                                && let Err(error) = popup.model.navigate_month(month_delta)
+                            {
+                                eprintln!("mhyprbar: clock calendar scroll failed: {error:#}");
+                            }
+                            self.draw_clock_popup();
                         }
                     }
                     PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
