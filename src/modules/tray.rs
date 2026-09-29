@@ -257,7 +257,7 @@ fn default_tooltip_delay_ms() -> u64 {
 }
 
 fn default_tooltip_offset() -> i32 {
-    6
+    2
 }
 
 fn default_tooltip_max_chars() -> usize {

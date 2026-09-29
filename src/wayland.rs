@@ -721,7 +721,8 @@ impl App {
         style.padding_x = 8;
         style.padding_y = 5;
         style.min_width = 0;
-        let offset = 6;
+        // Match click popups: keep hover tooltips just 2 px from the bar edge.
+        let offset = 2;
         let (width, height) = Renderer::tooltip_size(&text, &style);
         let max_left = bar_width.saturating_sub(width) as i32;
         let left = (x.round() as i32 - width as i32 / 2).clamp(0, max_left.max(0));
@@ -760,7 +761,8 @@ impl App {
         }
         layer.set_size(width, height);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_exclusive_zone(0);
+        // Ignore the bar's reserved exclusive zone; margins already include bar_height + offset.
+        layer.set_exclusive_zone(-1);
         layer.commit();
 
         self.tooltip = Some(TooltipSurface {
@@ -842,7 +844,8 @@ impl App {
         }
         layer.set_size(width, height);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_exclusive_zone(0);
+        // Ignore the bar's reserved exclusive zone; margins already include bar_height + offset.
+        layer.set_exclusive_zone(-1);
         layer.commit();
 
         self.tooltip = Some(TooltipSurface {

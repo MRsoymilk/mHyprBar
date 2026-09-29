@@ -5,7 +5,7 @@ show_passive = false
 [tooltip]
 enabled = true
 delay_ms = 350
-offset = 6
+offset = 2
 max_chars = 96
 
 [tooltip.style]
