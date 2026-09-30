@@ -36,8 +36,14 @@ use wayland_client::{
     protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
 
+#[cfg(mhypr_module = "active_window")]
+use crate::active_window_popup::{ActiveWindowPopupModel, WindowListScope};
+#[cfg(mhypr_module = "audio")]
+use crate::audio_popup::AudioPopupModel;
 #[cfg(mhypr_module = "battery")]
 use crate::battery_popup::BatteryPopupModel;
+#[cfg(mhypr_module = "brightness")]
+use crate::brightness_popup::BrightnessPopupModel;
 #[cfg(mhypr_module = "clock")]
 use crate::clock_popup::ClockPopupModel;
 #[cfg(mhypr_module = "cpu")]
@@ -46,6 +52,8 @@ use crate::cpu_popup::CpuPopupModel;
 use crate::disk_popup::DiskPopupModel;
 #[cfg(mhypr_module = "gpu")]
 use crate::gpu_popup::{GpuPopupConfig, GpuPopupModel};
+#[cfg(mhypr_module = "layout")]
+use crate::layout_popup::LayoutPopupModel;
 #[cfg(mhypr_module = "memory")]
 use crate::memory_popup::MemoryPopupModel;
 #[cfg(mhypr_module = "monitor")]
@@ -130,8 +138,14 @@ pub fn run(config: BarConfig) -> Result<()> {
         tray,
         tray_hover: None,
         tooltip: None,
+        #[cfg(mhypr_module = "active_window")]
+        active_window_popup: None,
+        #[cfg(mhypr_module = "audio")]
+        audio_popup: None,
         #[cfg(mhypr_module = "battery")]
         battery_popup: None,
+        #[cfg(mhypr_module = "brightness")]
+        brightness_popup: None,
         #[cfg(mhypr_module = "clock")]
         clock_popup: None,
         #[cfg(mhypr_module = "cpu")]
@@ -140,6 +154,8 @@ pub fn run(config: BarConfig) -> Result<()> {
         disk_popup: None,
         #[cfg(mhypr_module = "gpu")]
         gpu_popup: None,
+        #[cfg(mhypr_module = "layout")]
+        layout_popup: None,
         #[cfg(mhypr_module = "memory")]
         memory_popup: None,
         #[cfg(mhypr_module = "monitor")]
@@ -282,9 +298,17 @@ pub fn run(config: BarConfig) -> Result<()> {
         if let Some(tooltip_timeout) = app.tray_hover_timeout() {
             timeout = timeout.min(tooltip_timeout);
         }
+        #[cfg(mhypr_module = "audio")]
+        if let Some(audio_timeout) = app.audio_popup_timeout() {
+            timeout = timeout.min(audio_timeout);
+        }
         #[cfg(mhypr_module = "battery")]
         if let Some(battery_timeout) = app.battery_popup_timeout() {
             timeout = timeout.min(battery_timeout);
+        }
+        #[cfg(mhypr_module = "brightness")]
+        if let Some(brightness_timeout) = app.brightness_popup_timeout() {
+            timeout = timeout.min(brightness_timeout);
         }
         #[cfg(mhypr_module = "clock")]
         if let Some(clock_timeout) = app.clock_popup_timeout() {
@@ -317,8 +341,12 @@ pub fn run(config: BarConfig) -> Result<()> {
             app.draw_all();
         }
         app.maybe_show_tray_tooltip(&qh);
+        #[cfg(mhypr_module = "audio")]
+        app.refresh_audio_popup_if_due();
         #[cfg(mhypr_module = "battery")]
         app.refresh_battery_popup_if_due();
+        #[cfg(mhypr_module = "brightness")]
+        app.refresh_brightness_popup_if_due();
         #[cfg(mhypr_module = "clock")]
         app.refresh_clock_popup_if_due();
         #[cfg(mhypr_module = "cpu")]
@@ -439,6 +467,52 @@ struct MonitorContextSurface {
     hovered_action: Option<usize>,
 }
 
+#[cfg(mhypr_module = "active_window")]
+struct ActiveWindowPopupSurface {
+    layer: LayerSurface,
+    model: ActiveWindowPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+}
+
+#[cfg(mhypr_module = "audio")]
+struct AudioPopupSurface {
+    layer: LayerSurface,
+    model: AudioPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
+}
+
+#[cfg(mhypr_module = "brightness")]
+struct BrightnessPopupSurface {
+    layer: LayerSurface,
+    model: BrightnessPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+    next_refresh: Instant,
+}
+
+#[cfg(mhypr_module = "layout")]
+struct LayoutPopupSurface {
+    layer: LayerSurface,
+    model: LayoutPopupModel,
+    width: u32,
+    height: u32,
+    configured: bool,
+    panel_x: f64,
+    panel_y: f64,
+}
+
 #[cfg(mhypr_module = "network")]
 struct NetworkPopupSurface {
     layer: LayerSurface,
@@ -525,8 +599,14 @@ struct App {
     tray: Option<TrayState>,
     tray_hover: Option<TrayHover>,
     tooltip: Option<TooltipSurface>,
+    #[cfg(mhypr_module = "active_window")]
+    active_window_popup: Option<ActiveWindowPopupSurface>,
+    #[cfg(mhypr_module = "audio")]
+    audio_popup: Option<AudioPopupSurface>,
     #[cfg(mhypr_module = "battery")]
     battery_popup: Option<BatteryPopupSurface>,
+    #[cfg(mhypr_module = "brightness")]
+    brightness_popup: Option<BrightnessPopupSurface>,
     #[cfg(mhypr_module = "clock")]
     clock_popup: Option<ClockPopupSurface>,
     #[cfg(mhypr_module = "cpu")]
@@ -535,6 +615,8 @@ struct App {
     disk_popup: Option<DiskPopupSurface>,
     #[cfg(mhypr_module = "gpu")]
     gpu_popup: Option<GpuPopupSurface>,
+    #[cfg(mhypr_module = "layout")]
+    layout_popup: Option<LayoutPopupSurface>,
     #[cfg(mhypr_module = "memory")]
     memory_popup: Option<MemoryPopupSurface>,
     #[cfg(mhypr_module = "monitor")]
@@ -604,14 +686,22 @@ impl App {
 
     fn remove_output(&mut self, output: &wl_output::WlOutput) {
         self.clear_tray_hover();
+        #[cfg(mhypr_module = "active_window")]
+        self.close_active_window_popup();
+        #[cfg(mhypr_module = "audio")]
+        self.close_audio_popup();
         #[cfg(mhypr_module = "battery")]
         self.close_battery_popup();
+        #[cfg(mhypr_module = "brightness")]
+        self.close_brightness_popup();
         #[cfg(mhypr_module = "clock")]
         self.close_clock_popup();
         #[cfg(mhypr_module = "cpu")]
         self.close_cpu_popup();
         #[cfg(mhypr_module = "gpu")]
         self.close_gpu_popup();
+        #[cfg(mhypr_module = "layout")]
+        self.close_layout_popup();
         #[cfg(mhypr_module = "disk")]
         self.close_disk_popup();
         #[cfg(mhypr_module = "memory")]
@@ -2218,6 +2308,616 @@ impl App {
         layer.commit();
     }
 
+    #[cfg(mhypr_module = "audio")]
+    fn audio_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.audio_popup.as_ref()?;
+        Some(popup.next_refresh.saturating_duration_since(Instant::now()))
+    }
+
+    #[cfg(mhypr_module = "audio")]
+    fn refresh_audio_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let Some(popup) = self.audio_popup.as_mut() else {
+            return;
+        };
+        if now < popup.next_refresh {
+            return;
+        }
+        if let Err(error) = popup.model.refresh() {
+            eprintln!("mhyprbar: audio popup refresh failed: {error:#}");
+        }
+        popup.next_refresh = now + popup.model.config.refresh_interval();
+        self.draw_audio_popup();
+    }
+
+    #[cfg(mhypr_module = "audio")]
+    fn close_audio_popup(&mut self) {
+        self.audio_popup = None;
+    }
+
+    #[cfg(mhypr_module = "audio")]
+    fn toggle_audio_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.audio_popup.is_some() {
+            self.close_audio_popup();
+            return Ok(true);
+        }
+
+        let model = AudioPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+        let (output, bar_width, bar_height) = {
+            let bar = self
+                .bars
+                .get(bar_index)
+                .context("audio popup bar output is unavailable")?;
+            (bar.output.clone(), bar.width, bar.height)
+        };
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x =
+            (local_x - panel_w / 2.0).clamp(0.0, (bar_width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar_height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar_height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "active_window")]
+        self.close_active_window_popup();
+        #[cfg(mhypr_module = "brightness")]
+        self.close_brightness_popup();
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "monitor")]
+        self.close_monitor_popup();
+        #[cfg(mhypr_module = "network")]
+        self.close_network_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let next_refresh = Instant::now() + model.config.refresh_interval();
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-audio-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        self.audio_popup = Some(AudioPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "audio")]
+    fn draw_audio_popup(&mut self) {
+        let Some(popup) = self.audio_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create audio popup SHM buffer: {error}");
+                return;
+            }
+        };
+        if let Err(error) = self.renderer.draw_audio_popup(
+            canvas,
+            width,
+            height,
+            &popup.model,
+            popup.panel_x,
+            popup.panel_y,
+        ) {
+            eprintln!("mhyprbar: audio popup render failed: {error:#}");
+            return;
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach audio popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "brightness")]
+    fn brightness_popup_timeout(&self) -> Option<Duration> {
+        let popup = self.brightness_popup.as_ref()?;
+        Some(
+            popup
+                .next_refresh
+                .saturating_duration_since(Instant::now()),
+        )
+    }
+
+    #[cfg(mhypr_module = "brightness")]
+    fn refresh_brightness_popup_if_due(&mut self) {
+        let now = Instant::now();
+        let Some(popup) = self.brightness_popup.as_mut() else {
+            return;
+        };
+        if now < popup.next_refresh {
+            return;
+        }
+        if let Err(error) = popup.model.refresh() {
+            eprintln!("mhyprbar: brightness popup refresh failed: {error:#}");
+        }
+        popup.next_refresh = now + popup.model.config.refresh_interval();
+        self.draw_brightness_popup();
+    }
+
+    #[cfg(mhypr_module = "brightness")]
+    fn close_brightness_popup(&mut self) {
+        self.brightness_popup = None;
+    }
+
+    #[cfg(mhypr_module = "brightness")]
+    fn toggle_brightness_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.brightness_popup.is_some() {
+            self.close_brightness_popup();
+            return Ok(true);
+        }
+
+        let model = BrightnessPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+        let (output, bar_width, bar_height) = {
+            let bar = self
+                .bars
+                .get(bar_index)
+                .context("brightness popup bar output is unavailable")?;
+            (bar.output.clone(), bar.width, bar.height)
+        };
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x =
+            (local_x - panel_w / 2.0).clamp(0.0, (bar_width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar_height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar_height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "active_window")]
+        self.close_active_window_popup();
+        #[cfg(mhypr_module = "audio")]
+        self.close_audio_popup();
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "monitor")]
+        self.close_monitor_popup();
+        #[cfg(mhypr_module = "network")]
+        self.close_network_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let next_refresh = Instant::now() + model.config.refresh_interval();
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-brightness-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        self.brightness_popup = Some(BrightnessPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+            next_refresh,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "brightness")]
+    fn draw_brightness_popup(&mut self) {
+        let Some(popup) = self.brightness_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create brightness popup SHM buffer: {error}");
+                return;
+            }
+        };
+        if let Err(error) = self.renderer.draw_brightness_popup(
+            canvas,
+            width,
+            height,
+            &popup.model,
+            popup.panel_x,
+            popup.panel_y,
+        ) {
+            eprintln!("mhyprbar: brightness popup render failed: {error:#}");
+            return;
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach brightness popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "layout")]
+    fn close_layout_popup(&mut self) {
+        self.layout_popup = None;
+    }
+
+    #[cfg(mhypr_module = "layout")]
+    fn toggle_layout_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+    ) -> Result<bool> {
+        if self.layout_popup.is_some() {
+            self.close_layout_popup();
+            return Ok(true);
+        }
+
+        let model = LayoutPopupModel::new()?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+        let (output, bar_width, bar_height) = {
+            let bar = self
+                .bars
+                .get(bar_index)
+                .context("layout popup bar output is unavailable")?;
+            (bar.output.clone(), bar.width, bar.height)
+        };
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1) as f64)
+            .unwrap_or(1080.0);
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x =
+            (local_x - panel_w / 2.0).clamp(0.0, (bar_width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar_height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar_height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "active_window")]
+        self.close_active_window_popup();
+        #[cfg(mhypr_module = "audio")]
+        self.close_audio_popup();
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "brightness")]
+        self.close_brightness_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "monitor")]
+        self.close_monitor_popup();
+        #[cfg(mhypr_module = "network")]
+        self.close_network_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-layout-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        self.layout_popup = Some(LayoutPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "layout")]
+    fn draw_layout_popup(&mut self) {
+        let Some(popup) = self.layout_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create layout popup SHM buffer: {error}");
+                return;
+            }
+        };
+        if let Err(error) = self.renderer.draw_layout_popup(
+            canvas,
+            width,
+            height,
+            &popup.model,
+            popup.panel_x,
+            popup.panel_y,
+        ) {
+            eprintln!("mhyprbar: layout popup render failed: {error:#}");
+            return;
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach layout popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
+    #[cfg(mhypr_module = "active_window")]
+    fn close_active_window_popup(&mut self) {
+        self.active_window_popup = None;
+    }
+
+    #[cfg(mhypr_module = "active_window")]
+    fn toggle_active_window_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+        monitor_scope: bool,
+    ) -> Result<bool> {
+        if self.active_window_popup.is_some() {
+            self.close_active_window_popup();
+            return Ok(true);
+        }
+
+        let monitor = self
+            .monitor_for_bar(bar_index)
+            .cloned()
+            .context("active window popup monitor is unavailable")?;
+        let active = hyprland::active_window()?;
+        let scope = if monitor_scope {
+            WindowListScope::Monitor {
+                id: monitor.id,
+                name: monitor.name.clone(),
+            }
+        } else {
+            WindowListScope::Workspace {
+                id: monitor.active_workspace,
+            }
+        };
+        let model = ActiveWindowPopupModel::new(scope, &active.address)?;
+        if !model.config.enabled {
+            return Ok(false);
+        }
+
+        let (output, bar_width, bar_height) = {
+            let bar = self
+                .bars
+                .get(bar_index)
+                .context("active window popup bar output is unavailable")?;
+            (bar.output.clone(), bar.width, bar.height)
+        };
+        let output_height = monitor.height.max(1) as f64;
+        let panel_w = model.config.width as f64;
+        let panel_h = model.panel_height() as f64;
+        let panel_x =
+            (local_x - panel_w / 2.0).clamp(0.0, (bar_width as f64 - panel_w).max(0.0));
+        let panel_y = if self.config.position == "bottom" {
+            (output_height - bar_height as f64 - panel_h - 2.0).max(0.0)
+        } else {
+            bar_height as f64 + 2.0
+        };
+
+        self.tooltip = None;
+        #[cfg(mhypr_module = "audio")]
+        self.close_audio_popup();
+        #[cfg(mhypr_module = "brightness")]
+        self.close_brightness_popup();
+        #[cfg(mhypr_module = "battery")]
+        self.close_battery_popup();
+        #[cfg(mhypr_module = "clock")]
+        self.close_clock_popup();
+        #[cfg(mhypr_module = "cpu")]
+        self.close_cpu_popup();
+        #[cfg(mhypr_module = "gpu")]
+        self.close_gpu_popup();
+        #[cfg(mhypr_module = "monitor")]
+        self.close_monitor_popup();
+        #[cfg(mhypr_module = "network")]
+        self.close_network_popup();
+        #[cfg(mhypr_module = "disk")]
+        self.close_disk_popup();
+        #[cfg(mhypr_module = "memory")]
+        self.close_memory_popup();
+        self.close_tray_popup();
+
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-active-window-popup"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.set_size(0, 0);
+        layer.commit();
+
+        self.active_window_popup = Some(ActiveWindowPopupSurface {
+            layer,
+            model,
+            width: 1,
+            height: 1,
+            configured: false,
+            panel_x,
+            panel_y,
+        });
+        Ok(true)
+    }
+
+    #[cfg(mhypr_module = "active_window")]
+    fn draw_active_window_popup(&mut self) {
+        let Some(popup) = self.active_window_popup.as_ref() else {
+            return;
+        };
+        if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+        let surface = popup.layer.wl_surface().clone();
+        let layer = popup.layer.clone();
+        let width = popup.width;
+        let height = popup.height;
+        let stride = width as i32 * 4;
+        let (buffer, canvas) = match self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(pair) => pair,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to create active window popup SHM buffer: {error}");
+                return;
+            }
+        };
+        if let Err(error) = self.renderer.draw_active_window_popup(
+            canvas,
+            width,
+            height,
+            &popup.model,
+            popup.panel_x,
+            popup.panel_y,
+        ) {
+            eprintln!("mhyprbar: active window popup render failed: {error:#}");
+            return;
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if let Err(error) = buffer.attach_to(&surface) {
+            eprintln!("mhyprbar: failed to attach active window popup SHM buffer: {error}");
+            return;
+        }
+        layer.commit();
+    }
+
     #[cfg(mhypr_module = "network")]
     fn close_network_popup(&mut self) {
         self.network_popup = None;
@@ -2999,6 +3699,42 @@ impl App {
             return;
         }
 
+        #[cfg(mhypr_module = "active_window")]
+        if name == "active_window" {
+            match self.toggle_active_window_popup(_qh, bar_index, x, false) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: active window popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
+        #[cfg(mhypr_module = "audio")]
+        if name == "audio" {
+            match self.toggle_audio_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: audio popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
+        #[cfg(mhypr_module = "brightness")]
+        if name == "brightness" {
+            match self.toggle_brightness_popup(_qh, bar_index, x) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("mhyprbar: brightness popup action failed: {error:#}");
+                    return;
+                }
+            }
+        }
+
         #[cfg(mhypr_module = "battery")]
         if name == "battery" {
             match self.toggle_battery_popup(_qh, bar_index, x) {
@@ -3102,6 +3838,58 @@ impl App {
         }
     }
 
+    #[cfg(mhypr_module = "layout")]
+    fn activate_layout_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        x: f64,
+    ) -> bool {
+        let Some(bar) = self.bars.get(bar_index) else {
+            return false;
+        };
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar.width, workspace_visible, &self.config, &self.modules)
+        else {
+            return false;
+        };
+        if hit.name != "layout" {
+            return false;
+        }
+
+        if let Err(error) = self.toggle_layout_popup(qh, bar_index, x) {
+            eprintln!("mhyprbar: layout popup action failed: {error:#}");
+        }
+        true
+    }
+
+    #[cfg(mhypr_module = "active_window")]
+    fn activate_active_window_monitor_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        x: f64,
+    ) -> bool {
+        let Some(bar) = self.bars.get(bar_index) else {
+            return false;
+        };
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar.width, workspace_visible, &self.config, &self.modules)
+        else {
+            return false;
+        };
+        if hit.name != "active_window" {
+            return false;
+        }
+
+        if let Err(error) = self.toggle_active_window_popup(qh, bar_index, x, true) {
+            eprintln!("mhyprbar: active window monitor popup action failed: {error:#}");
+        }
+        true
+    }
+
     fn scroll_module_at(&mut self, bar_index: usize, x: f64, delta: i32) -> bool {
         if delta == 0 {
             return false;
@@ -3192,6 +3980,33 @@ impl LayerShellHandler for App {
             self.tooltip = None;
             return;
         }
+        #[cfg(mhypr_module = "active_window")]
+        if self
+            .active_window_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.active_window_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "audio")]
+        if self
+            .audio_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.audio_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "brightness")]
+        if self
+            .brightness_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.brightness_popup = None;
+            return;
+        }
         #[cfg(mhypr_module = "battery")]
         if self
             .battery_popup
@@ -3226,6 +4041,15 @@ impl LayerShellHandler for App {
             .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
         {
             self.gpu_popup = None;
+            return;
+        }
+        #[cfg(mhypr_module = "layout")]
+        if self
+            .layout_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            self.layout_popup = None;
             return;
         }
         #[cfg(mhypr_module = "monitor")]
@@ -3313,6 +4137,48 @@ impl LayerShellHandler for App {
             self.draw_tooltip();
             return;
         }
+        #[cfg(mhypr_module = "active_window")]
+        if self
+            .active_window_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.active_window_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_active_window_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "audio")]
+        if self
+            .audio_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.audio_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_audio_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "brightness")]
+        if self
+            .brightness_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.brightness_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_brightness_popup();
+            return;
+        }
         #[cfg(mhypr_module = "battery")]
         if self
             .battery_popup
@@ -3367,6 +4233,20 @@ impl LayerShellHandler for App {
                 popup.configured = true;
             }
             self.draw_gpu_popup();
+            return;
+        }
+        #[cfg(mhypr_module = "layout")]
+        if self
+            .layout_popup
+            .as_ref()
+            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        {
+            if let Some(popup) = self.layout_popup.as_mut() {
+                popup.width = configure.new_size.0.max(1);
+                popup.height = configure.new_size.1.max(1);
+                popup.configured = true;
+            }
+            self.draw_layout_popup();
             return;
         }
         #[cfg(mhypr_module = "monitor")]
@@ -3519,6 +4399,199 @@ impl PointerHandler for App {
         events: &[PointerEvent],
     ) {
         for event in events {
+            #[cfg(mhypr_module = "active_window")]
+            if self
+                .active_window_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                let mut redraw = false;
+                match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        if let Some(popup) = self.active_window_popup.as_mut() {
+                            let next = popup.model.row_at(
+                                event.position.0 - popup.panel_x,
+                                event.position.1 - popup.panel_y,
+                            );
+                            if popup.model.hovered_row != next {
+                                popup.model.hovered_row = next;
+                                redraw = true;
+                            }
+                        }
+                    }
+                    PointerEventKind::Leave { .. } => {
+                        if let Some(popup) = self.active_window_popup.as_mut()
+                            && popup.model.hovered_row.take().is_some()
+                        {
+                            redraw = true;
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let (inside, address) =
+                            self.active_window_popup
+                                .as_ref()
+                                .map_or((false, None), |popup| {
+                                    let local_x = event.position.0 - popup.panel_x;
+                                    let local_y = event.position.1 - popup.panel_y;
+                                    let inside = local_x >= 0.0
+                                        && local_x < popup.model.config.width as f64
+                                        && local_y >= 0.0
+                                        && local_y < popup.model.panel_height() as f64;
+                                    let address = popup
+                                        .model
+                                        .row_at(local_x, local_y)
+                                        .and_then(|index| popup.model.rows.get(index))
+                                        .map(|row| row.address.clone());
+                                    (inside, address)
+                                });
+                        if !inside {
+                            self.close_active_window_popup();
+                        } else if let Some(address) = address {
+                            self.close_active_window_popup();
+                            if let Err(error) = hyprland::focus_window(&address) {
+                                eprintln!("mhyprbar: failed to focus window {address}: {error:#}");
+                            } else {
+                                self.modules.force_refresh("active_window");
+                                if let Err(error) = self.refresh_hyprland() {
+                                    eprintln!(
+                                        "mhyprbar: failed to refresh after window focus: {error:#}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_active_window_popup();
+                    }
+                    _ => {}
+                }
+                if redraw {
+                    self.draw_active_window_popup();
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "layout")]
+            if self
+                .layout_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                let mut redraw = false;
+                match event.kind {
+                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                        if let Some(popup) = self.layout_popup.as_mut() {
+                            let next = popup.model.row_at(
+                                event.position.0 - popup.panel_x,
+                                event.position.1 - popup.panel_y,
+                            );
+                            if popup.model.hovered_row != next {
+                                popup.model.hovered_row = next;
+                                redraw = true;
+                            }
+                        }
+                    }
+                    PointerEventKind::Leave { .. } => {
+                        if let Some(popup) = self.layout_popup.as_mut()
+                            && popup.model.hovered_row.take().is_some()
+                        {
+                            redraw = true;
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let (inside, row) = self.layout_popup.as_ref().map_or(
+                            (false, None),
+                            |popup| {
+                                let local_x = event.position.0 - popup.panel_x;
+                                let local_y = event.position.1 - popup.panel_y;
+                                let inside = local_x >= 0.0
+                                    && local_x < popup.model.config.width as f64
+                                    && local_y >= 0.0
+                                    && local_y < popup.model.panel_height() as f64;
+                                (inside, popup.model.row_at(local_x, local_y))
+                            },
+                        );
+                        if !inside {
+                            self.close_layout_popup();
+                        } else if let Some(row) = row {
+                            let result = self
+                                .layout_popup
+                                .as_ref()
+                                .map(|popup| popup.model.apply(row));
+                            self.close_layout_popup();
+                            if let Some(Err(error)) = result {
+                                eprintln!("mhyprbar: layout selection failed: {error:#}");
+                            } else {
+                                self.modules.force_refresh("layout");
+                                self.draw_all();
+                            }
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_layout_popup();
+                    }
+                    _ => {}
+                }
+                if redraw {
+                    self.draw_layout_popup();
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "audio")]
+            if self
+                .audio_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                match event.kind {
+                    PointerEventKind::Press { button, .. }
+                        if button == BTN_LEFT || button == BTN_RIGHT =>
+                    {
+                        let inside = self.audio_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside || button == BTN_RIGHT {
+                            self.close_audio_popup();
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            #[cfg(mhypr_module = "brightness")]
+            if self
+                .brightness_popup
+                .as_ref()
+                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
+            {
+                match event.kind {
+                    PointerEventKind::Press { button, .. }
+                        if button == BTN_LEFT || button == BTN_RIGHT =>
+                    {
+                        let inside = self.brightness_popup.as_ref().is_some_and(|popup| {
+                            event.position.0 >= popup.panel_x
+                                && event.position.0
+                                    < popup.panel_x + popup.model.config.width as f64
+                                && event.position.1 >= popup.panel_y
+                                && event.position.1
+                                    < popup.panel_y + popup.model.panel_height() as f64
+                        });
+                        if !inside || button == BTN_RIGHT {
+                            self.close_brightness_popup();
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             #[cfg(mhypr_module = "battery")]
             if self
                 .battery_popup
@@ -4059,6 +5132,18 @@ impl PointerHandler for App {
                             }
                         }
                         BTN_RIGHT => {
+                            #[cfg(mhypr_module = "layout")]
+                            if self.activate_layout_popup(qh, index, event.position.0) {
+                                continue;
+                            }
+                            #[cfg(mhypr_module = "active_window")]
+                            if self.activate_active_window_monitor_popup(
+                                qh,
+                                index,
+                                event.position.0,
+                            ) {
+                                continue;
+                            }
                             if self.tray_popup_matches_item_at(index, event.position.0) {
                                 self.close_tray_popup();
                             } else {
