@@ -2679,27 +2679,53 @@ impl Renderer {
         let header = Rect {
             x: panel.x + pad,
             y,
-            w: panel.w - pad * 2,
+            w: (panel.w - pad * 2).max(0),
             h: row_h,
         };
-        let pid_w = 44;
+        let content_w = header.w.max(0);
+        let pid_w = 40.min(content_w);
         let gap = 4;
-        let name_w = 140;
-        let rss_w = 70;
-        let pct_w = 52;
-        let fixed = pid_w + gap + name_w + gap + rss_w + gap + pct_w + gap;
-        let proc_bar_w = cfg.bar_width.min((header.w - fixed).max(1));
-        let name_x = header.x + pid_w + gap;
-        let rss_x = name_x + name_w + gap;
-        let pct_x = rss_x + rss_w + gap;
-        let proc_bar_x = pct_x + pct_w + gap;
+        let pid_name_gap = gap.min(content_w.saturating_sub(pid_w));
+        let name_x = header
+            .x
+            .saturating_add(pid_w)
+            .saturating_add(pid_name_gap);
+        let row_right = header.x.saturating_add(content_w);
+        // Keep every right-side cell strictly inside the highlighted row.  The
+        // small guard also absorbs glyph overhang from the text renderer.
+        let right_guard = 2.min(content_w);
+        let mut right = row_right.saturating_sub(right_guard);
+        let mut reserve_right = |desired: i32| {
+            let available = right.saturating_sub(name_x).max(0);
+            let w = desired.max(0).min(available);
+            let x = right.saturating_sub(w);
+            right = x;
+            (x, w.min(row_right.saturating_sub(x).max(0)))
+        };
+
+        let (proc_bar_x, proc_bar_w) = reserve_right(cfg.bar_width.min(48));
+        let _ = reserve_right(gap);
+        let (swap_pct_x, swap_pct_w) = reserve_right(48);
+        let _ = reserve_right(gap);
+        let (swap_x, swap_w) = reserve_right(48);
+        let _ = reserve_right(gap);
+        let (pct_x, pct_w) = reserve_right(44);
+        let _ = reserve_right(gap);
+        let (rss_x, rss_w) = reserve_right(48);
+        let name_gap = gap.min(right.saturating_sub(name_x).max(0));
+        let name_w = right.saturating_sub(name_x).saturating_sub(name_gap);
 
         for (x, w, text) in [
             (header.x, pid_w, "PID"),
             (name_x, name_w, "Name"),
             (rss_x, rss_w, "RSS"),
             (pct_x, pct_w, "%MEM"),
+            (swap_x, swap_w, "Swap"),
+            (swap_pct_x, swap_pct_w, "%SWAP"),
         ] {
+            if w <= 0 {
+                continue;
+            }
             self.draw_text_content(
                 canvas,
                 width,
@@ -2717,96 +2743,75 @@ impl Renderer {
             let row = Rect {
                 x: panel.x + pad,
                 y,
-                w: panel.w - pad * 2,
+                w: header.w,
                 h: row_h,
             };
             if model.hovered_process == Some(index) {
                 fill_rect(canvas, width, height, row, hover);
             }
 
-            self.draw_text_content(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: row.x,
-                    y,
-                    w: pid_w,
-                    h: row_h,
-                },
-                &process.pid.to_string(),
-                &cfg.style,
-                0,
-                0,
-            )?;
-            self.draw_text_content(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: name_x,
-                    y,
-                    w: name_w,
-                    h: row_h,
-                },
-                &process.name,
-                &cfg.style,
-                0,
-                0,
-            )?;
-            self.draw_text_content(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: rss_x,
-                    y,
-                    w: rss_w,
-                    h: row_h,
-                },
-                &crate::memory_popup::format_kib(process.rss_kib),
-                &cfg.style,
-                0,
-                0,
-            )?;
-            self.draw_text_content(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: pct_x,
-                    y,
-                    w: pct_w,
-                    h: row_h,
-                },
-                &format!("{:.1}%", process.percent),
-                &cfg.style,
-                0,
-                0,
-            )?;
+            let pid_text = process.pid.to_string();
+            let rss_text = crate::memory_popup::format_kib(process.rss_kib);
+            let pct_text = format!("{:.1}%", process.percent);
+            let swap_text = crate::memory_popup::format_kib(process.swap_kib);
+            let swap_pct_text = format!("{:.1}%", process.swap_percent);
+            for (x, w, text) in [
+                (row.x, pid_w, pid_text.as_str()),
+                (name_x, name_w, process.name.as_str()),
+                (rss_x, rss_w, rss_text.as_str()),
+                (pct_x, pct_w, pct_text.as_str()),
+                (swap_x, swap_w, swap_text.as_str()),
+                (swap_pct_x, swap_pct_w, swap_pct_text.as_str()),
+            ] {
+                if w <= 0 {
+                    continue;
+                }
+                self.draw_text_content(
+                    canvas,
+                    width,
+                    height,
+                    Rect { x, y, w, h: row_h },
+                    text,
+                    &cfg.style,
+                    0,
+                    0,
+                )?;
+            }
 
-            let bar_h = (row_h - 12).max(4);
-            let bar_rect = Rect {
+            let bar_h = (row_h - 12).max(6);
+            let mem_h = (bar_h / 2).max(2);
+            let mem_bar = Rect {
                 x: proc_bar_x,
                 y: y + (row_h - bar_h) / 2,
                 w: proc_bar_w,
-                h: bar_h,
+                h: mem_h,
             };
-            fill_rect(canvas, width, height, bar_rect, bar_bg);
-            fill_rect(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: bar_rect.x,
-                    y: bar_rect.y,
-                    w: ((bar_rect.w as f32 * process.percent.clamp(0.0, 100.0) / 100.0).round()
-                        as i32)
-                        .clamp(0, bar_rect.w),
-                    h: bar_rect.h,
-                },
-                memory_fill,
-            );
+            let swap_bar = Rect {
+                x: proc_bar_x,
+                y: mem_bar.y + mem_h,
+                w: proc_bar_w,
+                h: (bar_h - mem_h).max(2),
+            };
+            for (bar_rect, percent, fill) in [
+                (mem_bar, process.percent, memory_fill),
+                (swap_bar, process.swap_percent, swap_fill),
+            ] {
+                fill_rect(canvas, width, height, bar_rect, bar_bg);
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: bar_rect.x,
+                        y: bar_rect.y,
+                        w: ((bar_rect.w as f32 * percent.clamp(0.0, 100.0) / 100.0).round()
+                            as i32)
+                            .clamp(0, bar_rect.w),
+                        h: bar_rect.h,
+                    },
+                    fill,
+                );
+            }
 
             y = y.saturating_add(row_h);
         }

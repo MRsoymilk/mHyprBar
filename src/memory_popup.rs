@@ -1,4 +1,4 @@
-use std::{process::Command, time::Duration};
+use std::{fs, process::Command, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
@@ -140,7 +140,9 @@ impl MemoryPopupConfig {
 pub struct MemoryProcessRow {
     pub pid: u32,
     pub rss_kib: u64,
+    pub swap_kib: u64,
     pub percent: f32,
+    pub swap_percent: f32,
     pub name: String,
 }
 
@@ -155,7 +157,8 @@ impl MemoryPopupModel {
     pub fn new() -> Result<Self> {
         let config = MemoryPopupConfig::load()?;
         let stats = crate::modules::memory::read_stats()?;
-        let processes = read_processes(config.max_processes, stats.total_kib)?;
+        let processes =
+            read_processes(config.max_processes, stats.total_kib, stats.swap_used_kib())?;
         Ok(Self {
             config,
             stats,
@@ -166,7 +169,11 @@ impl MemoryPopupModel {
 
     pub fn refresh(&mut self) -> Result<()> {
         self.stats = crate::modules::memory::read_stats()?;
-        self.processes = read_processes(self.config.max_processes, self.stats.total_kib)?;
+        self.processes = read_processes(
+            self.config.max_processes,
+            self.stats.total_kib,
+            self.stats.swap_used_kib(),
+        )?;
         Ok(())
     }
 
@@ -210,9 +217,13 @@ pub fn format_kib(kib: u64) -> String {
     }
 }
 
-fn read_processes(limit: usize, total_kib: u64) -> Result<Vec<MemoryProcessRow>> {
+fn read_processes(
+    limit: usize,
+    total_kib: u64,
+    swap_used_kib: u64,
+) -> Result<Vec<MemoryProcessRow>> {
     let output = Command::new("ps")
-        .args(["-eo", "pid=,rss=,comm=", "--sort=-rss"])
+        .args(["-eo", "pid=,rss=,comm="])
         .output()
         .context("failed to launch ps for memory popup")?;
     ensure!(output.status.success(), "ps failed for memory popup");
@@ -220,9 +231,6 @@ fn read_processes(limit: usize, total_kib: u64) -> Result<Vec<MemoryProcessRow>>
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut rows = Vec::new();
     for line in stdout.lines() {
-        if rows.len() >= limit {
-            break;
-        }
         let mut fields = line.split_whitespace();
         let Some(pid) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
             continue;
@@ -234,19 +242,47 @@ fn read_processes(limit: usize, total_kib: u64) -> Result<Vec<MemoryProcessRow>>
         if name.is_empty() {
             continue;
         }
-        let percent = if total_kib > 0 {
-            (100.0 * rss_kib as f64 / total_kib as f64) as f32
-        } else {
-            0.0
-        };
+
+        let swap_kib = read_process_swap_kib(pid).unwrap_or(0);
+        let percent = percent_of(rss_kib, total_kib);
+        let swap_percent = percent_of(swap_kib, swap_used_kib);
         rows.push(MemoryProcessRow {
             pid,
             rss_kib,
+            swap_kib,
             percent,
+            swap_percent,
             name,
         });
     }
+
+    rows.sort_by(|a, b| {
+        b.rss_kib
+            .saturating_add(b.swap_kib)
+            .cmp(&a.rss_kib.saturating_add(a.swap_kib))
+            .then_with(|| b.swap_kib.cmp(&a.swap_kib))
+            .then_with(|| b.rss_kib.cmp(&a.rss_kib))
+    });
+    rows.truncate(limit);
     Ok(rows)
+}
+
+fn read_process_swap_kib(pid: u32) -> Option<u64> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        (fields.next()? == "VmSwap:")
+            .then(|| fields.next()?.parse::<u64>().ok())
+            .flatten()
+    })
+}
+
+fn percent_of(used: u64, total: u64) -> f32 {
+    if total == 0 {
+        0.0
+    } else {
+        (100.0 * used as f64 / total as f64) as f32
+    }
 }
 
 fn default_enabled() -> bool {
