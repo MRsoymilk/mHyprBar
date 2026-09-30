@@ -1,3 +1,5 @@
+pub mod popup;
+
 use std::{
     io::Write,
     process::{Command, Stdio},
@@ -17,11 +19,11 @@ use crate::{
 pub const NAME: &str = "layout";
 pub const CONFIG_FILE: &str = "modules/layout.toml";
 
-const ICON_DWINDLE_PNG: &[u8] = include_bytes!("../../res/layout/layout-dwindle.png");
-const ICON_MASTER_PNG: &[u8] = include_bytes!("../../res/layout/layout-master.png");
-const ICON_SCROLLING_PNG: &[u8] = include_bytes!("../../res/layout/layout-scrolling.png");
-const ICON_MONOCLE_PNG: &[u8] = include_bytes!("../../res/layout/layout-monocle.png");
-const ICON_FLOATING_PNG: &[u8] = include_bytes!("../../res/layout/floating.png");
+const ICON_DWINDLE_PNG: &[u8] = include_bytes!("../../../res/layout/layout-dwindle.png");
+const ICON_MASTER_PNG: &[u8] = include_bytes!("../../../res/layout/layout-master.png");
+const ICON_SCROLLING_PNG: &[u8] = include_bytes!("../../../res/layout/layout-scrolling.png");
+const ICON_MONOCLE_PNG: &[u8] = include_bytes!("../../../res/layout/layout-monocle.png");
+const ICON_FLOATING_PNG: &[u8] = include_bytes!("../../../res/layout/floating.png");
 
 #[derive(Debug, Deserialize)]
 struct LayoutConfig {

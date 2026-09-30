@@ -1,3 +1,6 @@
+pub mod backend;
+pub mod popup;
+
 use std::{
     io::Write,
     process::{Command, Stdio},
@@ -9,15 +12,13 @@ use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
 use super::{ModuleVisual, StatusModule};
-use crate::{
-    config::{self, ModuleStyle},
-    gpu::{GpuBackend, GpuStats, create_backend},
-};
+use self::backend::{GpuBackend, GpuStats, create_backend};
+use crate::config::{self, ModuleStyle};
 
 pub const NAME: &str = "gpu";
 pub const CONFIG_FILE: &str = "modules/gpu.toml";
 
-const ICON_GPU_SVG: &[u8] = include_bytes!("../../res/gpu/gpu.svg");
+const ICON_GPU_SVG: &[u8] = include_bytes!("../../../res/gpu/gpu.svg");
 
 #[derive(Debug, Deserialize)]
 struct GpuConfig {
@@ -96,7 +97,7 @@ impl GpuModule {
     pub fn load() -> Result<Self> {
         let config: GpuConfig = config::load_module(NAME)?;
         validate_config(&config)?;
-        let _ = crate::gpu_popup::GpuPopupConfig::load()?;
+        let _ = crate::modules::gpu::popup::GpuPopupConfig::load()?;
 
         let icon = rasterize_svg("gpu.svg", ICON_GPU_SVG)?;
         let mut backend = create_backend(&config.backend, &config.device)?;
@@ -152,7 +153,7 @@ impl StatusModule for GpuModule {
         self.revision
     }
 
-    fn gpu_processes(&mut self, limit: usize) -> Result<Vec<crate::gpu::GpuProcess>> {
+    fn gpu_processes(&mut self, limit: usize) -> Result<Vec<crate::modules::gpu::backend::GpuProcess>> {
         self.backend.processes(limit)
     }
 
@@ -358,7 +359,7 @@ fn default_memory_fill() -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::gpu::GpuVendor;
+    use crate::modules::gpu::backend::GpuVendor;
 
     #[test]
     fn vendor_labels_are_stable() {

@@ -1,10 +1,10 @@
 use anyhow::{Result, ensure};
 use serde::Deserialize;
 
+use super::icon::{WindowIcon, resolve_window_icon};
 use crate::{
     config::{self, ModuleStyle},
     hyprland,
-    window_icon::{WindowIcon, resolve_window_icon},
 };
 
 #[derive(Clone, Debug)]

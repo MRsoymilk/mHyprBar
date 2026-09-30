@@ -1,13 +1,16 @@
+mod icon;
+pub mod popup;
+
 use std::time::Duration;
 
 use anyhow::{Result, ensure};
 use serde::Deserialize;
 
 use super::{ModuleVisual, StatusModule};
+use self::icon::{WindowIcon, resolve_window_icon};
 use crate::{
     config::{self, ModuleStyle},
     hyprland,
-    window_icon::{WindowIcon, resolve_window_icon},
 };
 
 pub const NAME: &str = "active_window";

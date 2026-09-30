@@ -1,3 +1,5 @@
+pub mod popup;
+
 use std::{ffi::CString, mem::MaybeUninit, os::raw::c_char, ptr, time::Duration};
 
 use anyhow::{Context, Result, ensure};
@@ -58,7 +60,7 @@ impl ClockModule {
     pub fn load() -> Result<Self> {
         let config: ClockConfig = config::load_module(NAME)?;
         validate_config(&config)?;
-        let _ = crate::clock_popup::ClockPopupConfig::load()?;
+        let _ = crate::modules::clock::popup::ClockPopupConfig::load()?;
 
         let visual = ClockVisual {
             time_text: String::new(),

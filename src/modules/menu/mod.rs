@@ -17,7 +17,7 @@ use crate::config::{self, ModuleStyle};
 pub const NAME: &str = "menu";
 pub const CONFIG_FILE: &str = "modules/menu.toml";
 
-const ICON_MENU_PNG: &[u8] = include_bytes!("../../res/menu/icon.png");
+const ICON_MENU_PNG: &[u8] = include_bytes!("../../../res/menu/icon.png");
 
 #[derive(Debug, Deserialize)]
 struct MenuConfig {

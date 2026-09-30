@@ -1,3 +1,5 @@
+pub mod popup;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -134,7 +136,7 @@ impl BatteryModule {
     pub fn load() -> Result<Self> {
         let config: BatteryConfig = config::load_module(NAME)?;
         validate_config(&config)?;
-        let _ = crate::battery_popup::BatteryPopupConfig::load()?;
+        let _ = crate::modules::battery::popup::BatteryPopupConfig::load()?;
 
         let high_color = config::parse_rgba(&config.high_color)?;
         let medium_color = config::parse_rgba(&config.medium_color)?;

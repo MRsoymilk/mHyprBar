@@ -1,3 +1,5 @@
+pub mod popup;
+
 use std::{
     fs,
     path::PathBuf,
@@ -52,7 +54,7 @@ impl NetworkModule {
             "network interface must not be empty"
         );
         config.style.validate()?;
-        let _ = crate::network_popup::NetworkPopupConfig::load()?;
+        let _ = crate::modules::network::popup::NetworkPopupConfig::load()?;
         Ok(Self {
             config,
             previous: None,

@@ -1,3 +1,5 @@
+pub mod popup;
+
 use std::{
     fs,
     io::Write,
@@ -15,8 +17,8 @@ use crate::config::{self, ModuleStyle};
 pub const NAME: &str = "memory";
 pub const CONFIG_FILE: &str = "modules/memory.toml";
 
-const ICON_MEMORY_SVG: &[u8] = include_bytes!("../../res/memory/memory.svg");
-const ICON_SWAP_SVG: &[u8] = include_bytes!("../../res/memory/swap.svg");
+const ICON_MEMORY_SVG: &[u8] = include_bytes!("../../../res/memory/memory.svg");
+const ICON_SWAP_SVG: &[u8] = include_bytes!("../../../res/memory/swap.svg");
 
 #[derive(Debug, Deserialize)]
 struct MemoryConfig {
@@ -148,7 +150,7 @@ impl MemoryModule {
         ensure!(config.row_gap >= 0, "memory row_gap must not be negative");
         ensure!(config.text_gap >= 0, "memory text_gap must not be negative");
         config.style.validate()?;
-        let _ = crate::memory_popup::MemoryPopupConfig::load()?;
+        let _ = crate::modules::memory::popup::MemoryPopupConfig::load()?;
 
         let icons = MemoryIcons::load()?;
         let bar_background = config::parse_rgba(&config.bar_background)?;

@@ -1,3 +1,5 @@
+pub mod popup;
+
 use std::{
     io::Write,
     process::{Command, Stdio},
@@ -14,10 +16,10 @@ use crate::config::{self, ModuleStyle};
 pub const NAME: &str = "audio";
 pub const CONFIG_FILE: &str = "modules/audio.toml";
 
-const ICON_MUTED_SVG: &[u8] = include_bytes!("../../res/audio/volume-muted.svg");
-const ICON_ZERO_SVG: &[u8] = include_bytes!("../../res/audio/volume-zero.svg");
-const ICON_LOW_SVG: &[u8] = include_bytes!("../../res/audio/volume-low.svg");
-const ICON_HIGH_SVG: &[u8] = include_bytes!("../../res/audio/volume-high.svg");
+const ICON_MUTED_SVG: &[u8] = include_bytes!("../../../res/audio/volume-muted.svg");
+const ICON_ZERO_SVG: &[u8] = include_bytes!("../../../res/audio/volume-zero.svg");
+const ICON_LOW_SVG: &[u8] = include_bytes!("../../../res/audio/volume-low.svg");
+const ICON_HIGH_SVG: &[u8] = include_bytes!("../../../res/audio/volume-high.svg");
 
 #[derive(Debug, Deserialize)]
 struct AudioConfig {

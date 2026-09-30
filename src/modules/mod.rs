@@ -32,7 +32,6 @@ pub mod monitor;
 pub mod mpris;
 #[cfg(mhypr_module = "network")]
 pub mod network;
-#[cfg(mhypr_module = "tray")]
 pub mod tray;
 
 #[derive(Clone, Copy, Debug)]
@@ -92,7 +91,7 @@ pub(super) trait StatusModule {
         Ok(false)
     }
     #[cfg(mhypr_module = "gpu")]
-    fn gpu_processes(&mut self, _limit: usize) -> Result<Vec<crate::gpu::GpuProcess>> {
+    fn gpu_processes(&mut self, _limit: usize) -> Result<Vec<crate::modules::gpu::backend::GpuProcess>> {
         Ok(Vec::new())
     }
 }
@@ -303,7 +302,7 @@ impl ModuleManager {
     }
 
     #[cfg(mhypr_module = "gpu")]
-    pub fn gpu_processes(&mut self, limit: usize) -> Result<Vec<crate::gpu::GpuProcess>> {
+    pub fn gpu_processes(&mut self, limit: usize) -> Result<Vec<crate::modules::gpu::backend::GpuProcess>> {
         let Some(module) = self
             .modules
             .iter_mut()

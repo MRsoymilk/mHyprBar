@@ -1,3 +1,5 @@
+pub mod popup;
+
 use std::{
     fs,
     io::Write,
@@ -16,8 +18,8 @@ use crate::config::{self, ModuleStyle};
 pub const NAME: &str = "brightness";
 pub const CONFIG_FILE: &str = "modules/brightness.toml";
 
-const ICON_LOW_SVG: &[u8] = include_bytes!("../../res/brightness/brightness-low.svg");
-const ICON_HIGH_SVG: &[u8] = include_bytes!("../../res/brightness/brightness-high.svg");
+const ICON_LOW_SVG: &[u8] = include_bytes!("../../../res/brightness/brightness-low.svg");
+const ICON_HIGH_SVG: &[u8] = include_bytes!("../../../res/brightness/brightness-high.svg");
 
 #[derive(Debug, Deserialize)]
 struct BrightnessConfig {

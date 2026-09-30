@@ -1,3 +1,5 @@
+pub mod popup;
+
 use std::{
     fs,
     io::Write,
@@ -15,7 +17,7 @@ use crate::config::{self, ModuleStyle};
 pub const NAME: &str = "cpu";
 pub const CONFIG_FILE: &str = "modules/cpu.toml";
 
-const ICON_CPU_SVG: &[u8] = include_bytes!("../../res/cpu/cpu.svg");
+const ICON_CPU_SVG: &[u8] = include_bytes!("../../../res/cpu/cpu.svg");
 
 #[derive(Debug, Deserialize)]
 struct CpuConfig {
@@ -133,7 +135,7 @@ impl CpuModule {
             "cpu must show either graph or text"
         );
         config.style.validate()?;
-        let _ = crate::cpu_popup::CpuPopupConfig::load()?;
+        let _ = crate::modules::cpu::popup::CpuPopupConfig::load()?;
 
         let icon = rasterize_svg("cpu.svg", ICON_CPU_SVG)?;
         let graph_background = config::parse_rgba(&config.graph_background)?;

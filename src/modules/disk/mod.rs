@@ -1,3 +1,5 @@
+pub mod popup;
+
 use std::{
     collections::HashSet,
     env,
@@ -19,7 +21,7 @@ use crate::config::{self, ModuleStyle};
 pub const NAME: &str = "disk";
 pub const CONFIG_FILE: &str = "modules/disk.toml";
 
-const ICON_DISK_SVG: &[u8] = include_bytes!("../../res/disk/disk.svg");
+const ICON_DISK_SVG: &[u8] = include_bytes!("../../../res/disk/disk.svg");
 
 #[derive(Debug, Deserialize)]
 struct DiskConfig {
@@ -131,7 +133,7 @@ impl DiskModule {
         );
         config.style.validate()?;
         let _ = configured_paths_from(&config)?;
-        let _ = crate::disk_popup::DiskPopupConfig::load()?;
+        let _ = crate::modules::disk::popup::DiskPopupConfig::load()?;
 
         let icon = rasterize_svg("disk.svg", ICON_DISK_SVG)?;
         let bar_background = config::parse_rgba(&config.bar_background)?;

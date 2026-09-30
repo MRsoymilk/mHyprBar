@@ -3,11 +3,8 @@ use std::time::Duration;
 use anyhow::{Result, ensure};
 use serde::Deserialize;
 
-use crate::{
-    config::{self, ModuleStyle},
-    gpu::GpuProcess,
-    modules::gpu::GpuVisual,
-};
+use super::{GpuVisual, backend::GpuProcess};
+use crate::config::{self, ModuleStyle};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct GpuPopupConfig {

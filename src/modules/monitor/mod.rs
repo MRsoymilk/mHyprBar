@@ -1,3 +1,5 @@
+pub mod popup;
+
 use std::{
     io::Write,
     process::{Command, Stdio},
@@ -17,7 +19,7 @@ use crate::{
 pub const NAME: &str = "monitor";
 pub const CONFIG_FILE: &str = "modules/monitor.toml";
 
-const ICON_MONITOR_SVG: &[u8] = include_bytes!("../../res/monitor/monitor.svg");
+const ICON_MONITOR_SVG: &[u8] = include_bytes!("../../../res/monitor/monitor.svg");
 
 #[derive(Debug, Deserialize)]
 struct MonitorConfig {
@@ -83,7 +85,7 @@ impl MonitorModule {
     pub fn load() -> Result<Self> {
         let config: MonitorConfig = config::load_module(NAME)?;
         validate_config(&config)?;
-        let _ = crate::monitor_popup::MonitorPopupConfig::load()?;
+        let _ = crate::modules::monitor::popup::MonitorPopupConfig::load()?;
 
         Ok(Self {
             dot_color: config::parse_rgba(&config.dot_color)?,
