@@ -23,8 +23,6 @@ pub struct CpuPopupConfig {
     pub bar_width: i32,
     #[serde(default = "default_bar_background")]
     pub bar_background: String,
-    #[serde(default = "default_bar_fill")]
-    pub bar_fill: String,
     #[serde(default = "default_border")]
     pub border: String,
     #[serde(default = "default_separator")]
@@ -37,6 +35,14 @@ pub struct CpuPopupConfig {
 
 #[derive(Deserialize)]
 struct CpuPopupFile {
+    #[serde(default = "default_warn_percent")]
+    warn_percent: f32,
+    #[serde(default = "default_graph_low")]
+    graph_low: String,
+    #[serde(default = "default_graph_mid")]
+    graph_mid: String,
+    #[serde(default = "default_graph_high")]
+    graph_high: String,
     #[serde(default)]
     popup: CpuPopupConfig,
 }
@@ -52,7 +58,6 @@ impl Default for CpuPopupConfig {
             max_processes: default_max_processes(),
             bar_width: default_bar_width(),
             bar_background: default_bar_background(),
-            bar_fill: default_bar_fill(),
             border: default_border(),
             separator: default_separator(),
             hover_background: default_hover(),
@@ -63,10 +68,7 @@ impl Default for CpuPopupConfig {
 
 impl CpuPopupConfig {
     pub fn load() -> Result<Self> {
-        let file: CpuPopupFile = config::load_module("cpu")?;
-        let cfg = file.popup;
-        cfg.validate()?;
-        Ok(cfg)
+        Ok(load_popup_file()?.popup)
     }
 
     fn validate(&self) -> Result<()> {
@@ -90,7 +92,6 @@ impl CpuPopupConfig {
         );
         self.style.validate()?;
         let _ = config::parse_rgba(&self.bar_background)?;
-        let _ = config::parse_rgba(&self.bar_fill)?;
         let _ = config::parse_rgba(&self.border)?;
         let _ = config::parse_rgba(&self.separator)?;
         let _ = config::parse_rgba(&self.hover_background)?;
@@ -103,10 +104,6 @@ impl CpuPopupConfig {
 
     pub fn bar_background_rgba(&self) -> Result<[u8; 4]> {
         config::parse_rgba(&self.bar_background)
-    }
-
-    pub fn bar_fill_rgba(&self) -> Result<[u8; 4]> {
-        config::parse_rgba(&self.bar_fill)
     }
 
     pub fn border_rgba(&self) -> Result<[u8; 4]> {
@@ -133,10 +130,20 @@ pub struct CpuProcessRow {
     pub pid: u32,
     pub cpu: f32,
     pub name: String,
+    pub executable: String,
+    pub working_dir: String,
+    pub command_line: String,
+    pub parent_pid: Option<u32>,
+    pub state: Option<String>,
+    pub threads: Option<u32>,
 }
 
 pub struct CpuPopupModel {
     pub config: CpuPopupConfig,
+    pub warn_percent: f32,
+    pub graph_low: [u8; 4],
+    pub graph_mid: [u8; 4],
+    pub graph_high: [u8; 4],
     pub cores: Vec<CpuCoreRow>,
     pub processes: Vec<CpuProcessRow>,
     pub hovered_process: Option<usize>,
@@ -145,7 +152,12 @@ pub struct CpuPopupModel {
 
 impl CpuPopupModel {
     pub fn new() -> Result<Self> {
-        let config = CpuPopupConfig::load()?;
+        let file = load_popup_file()?;
+        let graph_low = config::parse_rgba(&file.graph_low)?;
+        let graph_mid = config::parse_rgba(&file.graph_mid)?;
+        let graph_high = config::parse_rgba(&file.graph_high)?;
+        let warn_percent = file.warn_percent;
+        let config = file.popup;
         let previous = read_core_counters()?;
         let processes = read_processes(config.max_processes)?;
         let cores = previous
@@ -157,6 +169,10 @@ impl CpuPopupModel {
             .collect();
         Ok(Self {
             config,
+            warn_percent,
+            graph_low,
+            graph_mid,
+            graph_high,
             cores,
             processes,
             hovered_process: None,
@@ -214,6 +230,44 @@ impl CpuPopupModel {
         let idx = ((y - start as f64) / self.config.row_height as f64) as usize;
         (idx < self.processes.len()).then_some(idx)
     }
+
+    pub fn process_tooltip_text(&self, index: usize) -> Option<String> {
+        let process = self.processes.get(index)?;
+        let ppid = process
+            .parent_pid
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".into());
+        let state = process.state.as_deref().unwrap_or("-");
+        let threads = process
+            .threads
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".into());
+        Some(format!(
+            "{}  ·  PID {}  ·  CPU {:.1}%\nExecutable: {}\nWorking dir: {}\nArguments: {}\nPPID: {}  ·  State: {}  ·  Threads: {}",
+            process.name,
+            process.pid,
+            process.cpu,
+            process.executable,
+            process.working_dir,
+            process.command_line,
+            ppid,
+            state,
+            threads,
+        ))
+    }
+}
+
+fn load_popup_file() -> Result<CpuPopupFile> {
+    let file: CpuPopupFile = config::load_module("cpu")?;
+    file.popup.validate()?;
+    ensure!(
+        (0.0..=100.0).contains(&file.warn_percent),
+        "cpu warn_percent must be between 0 and 100"
+    );
+    let _ = config::parse_rgba(&file.graph_low)?;
+    let _ = config::parse_rgba(&file.graph_mid)?;
+    let _ = config::parse_rgba(&file.graph_high)?;
+    Ok(file)
 }
 
 fn read_core_counters() -> Result<BTreeMap<u32, (u64, u64)>> {
@@ -274,9 +328,92 @@ fn read_processes(limit: usize) -> Result<Vec<CpuProcessRow>> {
         if name.is_empty() {
             continue;
         }
-        rows.push(CpuProcessRow { pid, cpu, name });
+        let details = read_process_details(pid, &name);
+        rows.push(CpuProcessRow {
+            pid,
+            cpu,
+            name,
+            executable: details.executable,
+            working_dir: details.working_dir,
+            command_line: details.command_line,
+            parent_pid: details.parent_pid,
+            state: details.state,
+            threads: details.threads,
+        });
     }
     Ok(rows)
+}
+
+struct CpuProcessDetails {
+    executable: String,
+    working_dir: String,
+    command_line: String,
+    parent_pid: Option<u32>,
+    state: Option<String>,
+    threads: Option<u32>,
+}
+
+fn read_process_details(pid: u32, fallback_name: &str) -> CpuProcessDetails {
+    let executable = fs::read_link(format!("/proc/{pid}/exe"))
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "-".into());
+    let working_dir = fs::read_link(format!("/proc/{pid}/cwd"))
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "-".into());
+
+    let command_line = fs::read(format!("/proc/{pid}/cmdline"))
+        .ok()
+        .map(|bytes| {
+            bytes
+                .split(|byte| *byte == 0)
+                .filter(|part| !part.is_empty())
+                .map(|part| String::from_utf8_lossy(part))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| fallback_name.to_owned());
+    let command_line = truncate_chars(&command_line, 800);
+
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok();
+    let parent_pid = status
+        .as_deref()
+        .and_then(|text| status_value(text, "PPid:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse::<u32>().ok());
+    let state = status
+        .as_deref()
+        .and_then(|text| status_value(text, "State:"))
+        .map(str::to_owned);
+    let threads = status
+        .as_deref()
+        .and_then(|text| status_value(text, "Threads:"))
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse::<u32>().ok());
+
+    CpuProcessDetails {
+        executable,
+        working_dir,
+        command_line,
+        parent_pid,
+        state,
+        threads,
+    }
+}
+
+fn status_value<'a>(status: &'a str, key: &str) -> Option<&'a str> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(key).map(str::trim))
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
+    }
+    let mut truncated: String = value.chars().take(max_chars.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
 }
 
 fn default_enabled() -> bool {
@@ -311,8 +448,20 @@ fn default_bar_background() -> String {
     "#303030".into()
 }
 
-fn default_bar_fill() -> String {
+fn default_warn_percent() -> f32 {
+    85.0
+}
+
+fn default_graph_low() -> String {
     "#F2F2F2".into()
+}
+
+fn default_graph_mid() -> String {
+    "#FFFF00".into()
+}
+
+fn default_graph_high() -> String {
+    "#FF0000".into()
 }
 
 fn default_border() -> String {

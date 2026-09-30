@@ -161,6 +161,37 @@ impl Renderer {
         (width as u32, height as u32)
     }
 
+    #[cfg(mhypr_module = "cpu")]
+    pub fn cpu_process_tooltip_size(
+        process: &crate::cpu_popup::CpuProcessRow,
+        style: &ModuleStyle,
+    ) -> (u32, u32) {
+        let char_width = (style.font_size.max(11.0) * 0.62).max(1.0);
+        let longest = [
+            process.name.chars().count(),
+            process.executable.chars().count(),
+            process.working_dir.chars().count(),
+            process.command_line.chars().count().min(110),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(40);
+        let width = ((longest as f32 * char_width).ceil() as i32 + 128).clamp(460, 640);
+        let args_width = (width - 24).max(1);
+        let chars_per_line = ((args_width as f32 / char_width).floor() as usize).max(24);
+        let args_lines = process
+            .command_line
+            .chars()
+            .count()
+            .div_ceil(chars_per_line)
+            .clamp(1, 4) as i32;
+        let line_height = (style.font_size.max(11.0) * 1.35).ceil() as i32;
+        let height = 196_i32
+            .saturating_add(args_lines.saturating_mul(line_height))
+            .clamp(220, 292);
+        (width as u32, height as u32)
+    }
+
     #[cfg(mhypr_module = "battery")]
     pub fn draw_battery_popup(
         &mut self,
@@ -2165,7 +2196,6 @@ impl Renderer {
         let border = cfg.border_rgba()?;
         let separator = cfg.separator_rgba()?;
         let bar_bg = cfg.bar_background_rgba()?;
-        let bar_fill = cfg.bar_fill_rgba()?;
         let hover = cfg.hover_rgba()?;
 
         fill_rect(canvas, width, height, panel, background);
@@ -2192,6 +2222,13 @@ impl Renderer {
 
         for core in &model.cores {
             let usage = core.usage.unwrap_or(0.0).clamp(0.0, 100.0);
+            let bar_fill = cpu_usage_color(
+                model.warn_percent,
+                model.graph_low,
+                model.graph_mid,
+                model.graph_high,
+                usage / 100.0,
+            );
             let label_rect = Rect {
                 x: panel.x + pad,
                 y,
@@ -2815,6 +2852,284 @@ impl Renderer {
 
             y = y.saturating_add(row_h);
         }
+
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "cpu")]
+    pub fn draw_cpu_process_tooltip(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        process: &crate::cpu_popup::CpuProcessRow,
+        style: &ModuleStyle,
+        accent: [u8; 4],
+    ) -> Result<()> {
+        canvas.fill(0);
+
+        let panel = Rect {
+            x: 0,
+            y: 0,
+            w: width as i32,
+            h: height as i32,
+        };
+        let background = style.background_rgba()?;
+        fill_rect(canvas, width, height, panel, background);
+
+        let foreground = style.foreground_rgba()?;
+        let border = [foreground[0], foreground[1], foreground[2], 48];
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let pad = 12_i32;
+        let content_w = panel.w.saturating_sub(pad * 2).max(1);
+        let mut title_style = style.clone();
+        title_style.font_size = 14.0;
+        title_style.foreground = "#F5F7FA".into();
+
+        let mut value_style = style.clone();
+        value_style.font_size = 11.0;
+        value_style.foreground = "#E6E9EE".into();
+
+        let mut label_style = style.clone();
+        label_style.font_size = 9.5;
+        label_style.foreground = "#8F98A6".into();
+
+        let mut meta_style = style.clone();
+        meta_style.font_size = 10.0;
+        meta_style.foreground = "#B8C0CC".into();
+
+        let mut accent_style = style.clone();
+        accent_style.font_size = 12.0;
+        accent_style.foreground = format!(
+            "#{:02X}{:02X}{:02X}{:02X}",
+            accent[0], accent[1], accent[2], accent[3]
+        );
+
+        let header_y = pad;
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: pad,
+                y: header_y,
+                w: 4,
+                h: 36,
+            },
+            accent,
+        );
+
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: pad + 12,
+                y: header_y,
+                w: (content_w - 104).max(1),
+                h: 24,
+            },
+            &process.name,
+            &title_style,
+            0,
+            0,
+        )?;
+
+        let cpu_text = format!("{:.1}% CPU", process.cpu);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: panel.w - pad - 88,
+                y: header_y,
+                w: 88,
+                h: 24,
+            },
+            &cpu_text,
+            &accent_style,
+            0,
+            0,
+        )?;
+
+        let cpu_bar = Rect {
+            x: pad + 12,
+            y: header_y + 28,
+            w: (content_w - 12).max(1),
+            h: 4,
+        };
+        fill_rect(canvas, width, height, cpu_bar, [255, 255, 255, 18]);
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: cpu_bar.x,
+                y: cpu_bar.y,
+                w: ((cpu_bar.w as f32 * process.cpu.clamp(0.0, 100.0) / 100.0).round()
+                    as i32)
+                    .clamp(0, cpu_bar.w),
+                h: cpu_bar.h,
+            },
+            accent,
+        );
+
+        let meta_y = header_y + 44;
+        let chip_gap = 6;
+        let chip_w = (content_w - chip_gap * 3) / 4;
+        let state = process.state.as_deref().unwrap_or("-");
+        let meta = [
+            ("PID", process.pid.to_string()),
+            (
+                "PPID",
+                process
+                    .parent_pid
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+            ),
+            ("STATE", state.to_owned()),
+            (
+                "THREADS",
+                process
+                    .threads
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+            ),
+        ];
+        for (index, (label, value)) in meta.into_iter().enumerate() {
+            let x = pad + index as i32 * (chip_w + chip_gap);
+            let chip = Rect {
+                x,
+                y: meta_y,
+                w: chip_w.max(1),
+                h: 30,
+            };
+            fill_rect(canvas, width, height, chip, [255, 255, 255, 10]);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: chip.x + 7,
+                    y: chip.y + 2,
+                    w: (chip.w - 14).max(1),
+                    h: 11,
+                },
+                label,
+                &label_style,
+                0,
+                0,
+            )?;
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: chip.x + 7,
+                    y: chip.y + 13,
+                    w: (chip.w - 14).max(1),
+                    h: 15,
+                },
+                &value,
+                &meta_style,
+                0,
+                0,
+            )?;
+        }
+
+        let mut y = meta_y + 40;
+        for (label, value) in [
+            ("EXECUTABLE", process.executable.as_str()),
+            ("WORKING DIR", process.working_dir.as_str()),
+        ] {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: pad,
+                    y,
+                    w: 86,
+                    h: 26,
+                },
+                label,
+                &label_style,
+                0,
+                0,
+            )?;
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: pad + 92,
+                    y,
+                    w: (content_w - 92).max(1),
+                    h: 26,
+                },
+                [255, 255, 255, 7],
+            );
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: pad + 100,
+                    y,
+                    w: (content_w - 108).max(1),
+                    h: 26,
+                },
+                value,
+                &value_style,
+                0,
+                0,
+            )?;
+            y += 32;
+        }
+
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: pad,
+                y,
+                w: content_w,
+                h: 18,
+            },
+            "ARGUMENTS",
+            &label_style,
+            0,
+            0,
+        )?;
+        y += 20;
+
+        let args_rect = Rect {
+            x: pad,
+            y,
+            w: content_w,
+            h: (panel.h - y - pad).max(1),
+        };
+        fill_rect(canvas, width, height, args_rect, [255, 255, 255, 7]);
+
+        let mut mono_style = value_style.clone();
+        mono_style.font_family = "monospace".into();
+        mono_style.font_size = 10.5;
+        mono_style.foreground = "#D7DCE4".into();
+        self.draw_wrapped_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: args_rect.x + 8,
+                y: args_rect.y + 6,
+                w: (args_rect.w - 16).max(1),
+                h: (args_rect.h - 12).max(1),
+            },
+            &process.command_line,
+            &mono_style,
+        )?;
 
         Ok(())
     }
@@ -4383,6 +4698,53 @@ impl Renderer {
 
         Ok(())
     }
+
+    fn draw_wrapped_text_content(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        text: &str,
+        style: &ModuleStyle,
+    ) -> Result<()> {
+        let foreground = style.foreground_rgba()?;
+        let color = Color::rgba(foreground[0], foreground[1], foreground[2], foreground[3]);
+        let text_w = rect.w.max(1) as f32;
+        let text_h = rect.h.max(1) as f32;
+        let line_height = (style.font_size * 1.35).max(style.font_size);
+        let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(style.font_size, line_height));
+        buffer.set_size(Some(text_w), Some(text_h));
+
+        let family = match style.font_family.as_str() {
+            "sans-serif" => Family::SansSerif,
+            "serif" => Family::Serif,
+            "monospace" => Family::Monospace,
+            "cursive" => Family::Cursive,
+            "fantasy" => Family::Fantasy,
+            name => Family::Name(name),
+        };
+        let attrs = Attrs::new().family(family);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.draw(
+            &mut self.fonts,
+            &mut self.cache,
+            color,
+            |x, y, w, h, pixel| {
+                blend_block(
+                    canvas,
+                    width,
+                    height,
+                    rect.x.saturating_add(x),
+                    rect.y.saturating_add(y),
+                    w,
+                    h,
+                    pixel,
+                );
+            },
+        );
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -4891,18 +5253,35 @@ fn draw_battery_bolt(canvas: &mut [u8], width: u32, height: u32, inner: Rect, co
 
 #[cfg(mhypr_module = "cpu")]
 fn cpu_graph_color(cpu: &crate::modules::cpu::CpuVisual, level: f32) -> [u8; 4] {
+    cpu_usage_color(
+        cpu.warn_percent,
+        cpu.graph_low,
+        cpu.graph_mid,
+        cpu.graph_high,
+        level,
+    )
+}
+
+#[cfg(mhypr_module = "cpu")]
+pub(crate) fn cpu_usage_color(
+    warn_percent: f32,
+    low: [u8; 4],
+    mid: [u8; 4],
+    high: [u8; 4],
+    level: f32,
+) -> [u8; 4] {
     let level = level.clamp(0.0, 1.0);
-    let warn = (cpu.warn_percent / 100.0).clamp(0.55, 0.95);
+    let warn = (warn_percent / 100.0).clamp(0.55, 0.95);
     let mid_start = (warn * 0.55).clamp(0.25, warn);
 
     if level <= mid_start {
-        cpu.graph_low
+        low
     } else if level <= warn {
         let span = (warn - mid_start).max(f32::EPSILON);
-        lerp_rgba(cpu.graph_low, cpu.graph_mid, (level - mid_start) / span)
+        lerp_rgba(low, mid, (level - mid_start) / span)
     } else {
         let span = (1.0 - warn).max(f32::EPSILON);
-        lerp_rgba(cpu.graph_mid, cpu.graph_high, (level - warn) / span)
+        lerp_rgba(mid, high, (level - warn) / span)
     }
 }
 

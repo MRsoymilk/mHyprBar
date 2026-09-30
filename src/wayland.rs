@@ -391,6 +391,11 @@ struct TooltipSurface {
     configured: bool,
     bar_index: usize,
     item_index: Option<usize>,
+    cpu_pid: Option<u32>,
+    #[cfg(mhypr_module = "cpu")]
+    cpu_process: Option<crate::cpu_popup::CpuProcessRow>,
+    #[cfg(mhypr_module = "cpu")]
+    cpu_accent: Option<[u8; 4]>,
 }
 
 #[cfg(mhypr_module = "battery")]
@@ -421,6 +426,7 @@ struct ClockPopupSurface {
 struct CpuPopupSurface {
     layer: LayerSurface,
     model: CpuPopupModel,
+    bar_index: usize,
     width: u32,
     height: u32,
     configured: bool,
@@ -824,7 +830,7 @@ impl App {
         if self
             .tooltip
             .as_ref()
-            .is_some_and(|tooltip| tooltip.item_index.is_none())
+            .is_some_and(|tooltip| tooltip.item_index.is_none() && tooltip.cpu_pid.is_none())
         {
             self.tooltip = None;
         }
@@ -861,7 +867,10 @@ impl App {
         };
         let text = layout.tooltip;
         if self.tooltip.as_ref().is_some_and(|tooltip| {
-            tooltip.bar_index == bar_index && tooltip.item_index.is_none() && tooltip.text == text
+            tooltip.bar_index == bar_index
+                && tooltip.item_index.is_none()
+                && tooltip.cpu_pid.is_none()
+                && tooltip.text == text
         }) {
             return;
         }
@@ -925,6 +934,11 @@ impl App {
             configured: false,
             bar_index,
             item_index: None,
+            cpu_pid: None,
+            #[cfg(mhypr_module = "cpu")]
+            cpu_process: None,
+            #[cfg(mhypr_module = "cpu")]
+            cpu_accent: None,
         });
     }
 
@@ -1008,6 +1022,11 @@ impl App {
             configured: false,
             bar_index,
             item_index: Some(item_index),
+            cpu_pid: None,
+            #[cfg(mhypr_module = "cpu")]
+            cpu_process: None,
+            #[cfg(mhypr_module = "cpu")]
+            cpu_accent: None,
         });
     }
 
@@ -1024,6 +1043,10 @@ impl App {
         let height = tooltip.height;
         let text = tooltip.text.clone();
         let style = tooltip.style.clone();
+        #[cfg(mhypr_module = "cpu")]
+        let cpu_process = tooltip.cpu_process.clone();
+        #[cfg(mhypr_module = "cpu")]
+        let cpu_accent = tooltip.cpu_accent;
         let stride = width as i32 * 4;
 
         let (buffer, canvas) = match self.pool.create_buffer(
@@ -1039,10 +1062,26 @@ impl App {
             }
         };
 
-        if let Err(error) = self
+        #[cfg(mhypr_module = "cpu")]
+        let render_result = if let Some(process) = cpu_process.as_ref() {
+            self.renderer.draw_cpu_process_tooltip(
+                canvas,
+                width,
+                height,
+                process,
+                &style,
+                cpu_accent.unwrap_or([242, 242, 242, 255]),
+            )
+        } else {
+            self.renderer
+                .draw_tooltip(canvas, width, height, &text, &style)
+        };
+        #[cfg(not(mhypr_module = "cpu"))]
+        let render_result = self
             .renderer
-            .draw_tooltip(canvas, width, height, &text, &style)
-        {
+            .draw_tooltip(canvas, width, height, &text, &style);
+
+        if let Err(error) = render_result {
             eprintln!("mhyprbar: tooltip render failed: {error:#}");
             return;
         }
@@ -1688,7 +1727,133 @@ impl App {
     }
 
     #[cfg(mhypr_module = "cpu")]
+    fn clear_cpu_process_tooltip(&mut self) {
+        if self
+            .tooltip
+            .as_ref()
+            .is_some_and(|tooltip| tooltip.cpu_pid.is_some())
+        {
+            self.tooltip = None;
+        }
+    }
+
+    #[cfg(mhypr_module = "cpu")]
+    fn show_cpu_process_tooltip(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        index: usize,
+        pointer_y: f64,
+    ) {
+        let Some((
+            text,
+            process,
+            bar_index,
+            panel_x,
+            panel_width,
+            mut style,
+            warn_percent,
+            graph_low,
+            graph_mid,
+            graph_high,
+        )) = self.cpu_popup.as_ref().and_then(|popup| {
+            let process = popup.model.processes.get(index)?.clone();
+            Some((
+                popup.model.process_tooltip_text(index)?,
+                process,
+                popup.bar_index,
+                popup.panel_x,
+                popup.model.config.width,
+                popup.model.config.style.clone(),
+                popup.model.warn_percent,
+                popup.model.graph_low,
+                popup.model.graph_mid,
+                popup.model.graph_high,
+            ))
+        }) else {
+            self.clear_cpu_process_tooltip();
+            return;
+        };
+        let pid = process.pid;
+
+        if self.tooltip.as_ref().is_some_and(|tooltip| {
+            tooltip.cpu_pid == Some(pid) && tooltip.text == text
+        }) {
+            return;
+        }
+
+        let Some(bar) = self.bars.get(bar_index) else {
+            self.clear_cpu_process_tooltip();
+            return;
+        };
+        let output = bar.output.clone();
+        let output_width = bar.width as i32;
+        let output_height = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.height.max(1))
+            .unwrap_or(1080);
+
+        style.background = "#17191DF2".into();
+        style.font_size = 11.0;
+        style.padding_x = 10;
+        style.padding_y = 8;
+        style.min_width = 0;
+
+        let accent = render::cpu_usage_color(
+            warn_percent,
+            graph_low,
+            graph_mid,
+            graph_high,
+            process.cpu.clamp(0.0, 100.0) / 100.0,
+        );
+        let (width, height) = Renderer::cpu_process_tooltip_size(&process, &style);
+        let tooltip_w = width as i32;
+        let tooltip_h = height as i32;
+        let gap = 8_i32;
+        let panel_left = panel_x.round() as i32;
+        let panel_right = panel_left.saturating_add(panel_width);
+        let right_candidate = panel_right.saturating_add(gap);
+        let left = if right_candidate.saturating_add(tooltip_w) <= output_width {
+            right_candidate
+        } else {
+            panel_left.saturating_sub(tooltip_w).saturating_sub(gap).max(0)
+        };
+        let max_top = output_height.saturating_sub(tooltip_h).max(0);
+        let top = (pointer_y.round() as i32 - tooltip_h / 2).clamp(0, max_top);
+
+        self.tooltip = None;
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layer_shell.create_layer_surface(
+            qh,
+            surface,
+            Layer::Overlay,
+            Some("mhyprbar-cpu-process-tooltip"),
+            Some(&output),
+        );
+        layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+        layer.set_margin(top, 0, 0, left);
+        layer.set_size(width, height);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_exclusive_zone(-1);
+        layer.commit();
+
+        self.tooltip = Some(TooltipSurface {
+            layer,
+            text,
+            style,
+            width,
+            height,
+            configured: false,
+            bar_index,
+            item_index: None,
+            cpu_pid: Some(pid),
+            cpu_process: Some(process),
+            cpu_accent: Some(accent),
+        });
+    }
+
+    #[cfg(mhypr_module = "cpu")]
     fn close_cpu_popup(&mut self) {
+        self.clear_cpu_process_tooltip();
         self.cpu_popup = None;
     }
 
@@ -1755,6 +1920,7 @@ impl App {
         self.cpu_popup = Some(CpuPopupSurface {
             layer,
             model,
+            bar_index,
             width: 1,
             height: 1,
             configured: false,
@@ -4833,6 +4999,8 @@ impl PointerHandler for App {
                 .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
             {
                 let mut redraw = false;
+                let mut tooltip_process = None;
+                let mut clear_tooltip = false;
                 match event.kind {
                     PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                         if let Some(popup) = self.cpu_popup.as_mut() {
@@ -4849,7 +5017,17 @@ impl PointerHandler for App {
                                 popup.model.hovered_process = next;
                                 redraw = true;
                             }
+                            tooltip_process = next;
+                            clear_tooltip = next.is_none();
                         }
+                    }
+                    PointerEventKind::Leave { .. } => {
+                        if let Some(popup) = self.cpu_popup.as_mut()
+                            && popup.model.hovered_process.take().is_some()
+                        {
+                            redraw = true;
+                        }
+                        clear_tooltip = true;
                     }
                     PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
                         let inside = self.cpu_popup.as_ref().is_some_and(|popup| {
@@ -4871,6 +5049,11 @@ impl PointerHandler for App {
                 }
                 if redraw {
                     self.draw_cpu_popup();
+                }
+                if let Some(index) = tooltip_process {
+                    self.show_cpu_process_tooltip(qh, index, event.position.1);
+                } else if clear_tooltip {
+                    self.clear_cpu_process_tooltip();
                 }
                 continue;
             }
