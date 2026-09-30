@@ -17,6 +17,12 @@ pub struct AudioPopupConfig {
     pub title_height: i32,
     #[serde(default = "default_row_height")]
     pub row_height: i32,
+    #[serde(default = "default_mute_width")]
+    pub mute_width: i32,
+    #[serde(default = "default_slider_width")]
+    pub slider_width: i32,
+    #[serde(default = "default_slider_height")]
+    pub slider_height: i32,
     #[serde(default = "default_refresh_interval_ms")]
     refresh_interval_ms: u64,
     #[serde(default = "default_border")]
@@ -37,6 +43,8 @@ pub struct AudioPopupConfig {
 
 #[derive(Deserialize)]
 struct AudioPopupFile {
+    #[serde(default = "default_max_percent")]
+    max_percent: u32,
     #[serde(default)]
     popup: AudioPopupConfig,
 }
@@ -49,6 +57,9 @@ impl Default for AudioPopupConfig {
             padding: default_padding(),
             title_height: default_title_height(),
             row_height: default_row_height(),
+            mute_width: default_mute_width(),
+            slider_width: default_slider_width(),
+            slider_height: default_slider_height(),
             refresh_interval_ms: default_refresh_interval_ms(),
             border: default_border(),
             separator: default_separator(),
@@ -62,13 +73,6 @@ impl Default for AudioPopupConfig {
 }
 
 impl AudioPopupConfig {
-    pub fn load() -> Result<Self> {
-        let file: AudioPopupFile = config::load_module("audio")?;
-        let config = file.popup;
-        config.validate()?;
-        Ok(config)
-    }
-
     fn validate(&self) -> Result<()> {
         ensure!(self.width > 0, "audio popup width must be positive");
         ensure!(
@@ -82,6 +86,14 @@ impl AudioPopupConfig {
         ensure!(
             self.row_height > 0,
             "audio popup row_height must be positive"
+        );
+        ensure!(
+            self.mute_width > 0,
+            "audio popup mute_width must be positive"
+        );
+        ensure!(
+            self.slider_width > 0 && self.slider_height > 0,
+            "audio popup slider dimensions must be positive"
         );
         ensure!(
             self.refresh_interval_ms > 0,
@@ -126,6 +138,12 @@ impl AudioPopupConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioOutputBackend {
+    PulseAudio,
+    PipeWire,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioOutputRow {
     pub id: String,
@@ -134,18 +152,44 @@ pub struct AudioOutputRow {
     pub percent: u32,
     pub muted: bool,
     pub is_default: bool,
+    pub backend: AudioOutputBackend,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AudioRowGeometry {
+    pub row_y: i32,
+    pub row_h: i32,
+    pub mute_x: i32,
+    pub mute_y: i32,
+    pub mute_w: i32,
+    pub mute_h: i32,
+    pub text_x: i32,
+    pub text_w: i32,
+    pub slider_x: i32,
+    pub slider_y: i32,
+    pub slider_w: i32,
+    pub slider_h: i32,
+    pub percent_x: i32,
+    pub percent_w: i32,
 }
 
 pub struct AudioPopupModel {
     pub config: AudioPopupConfig,
     pub outputs: Vec<AudioOutputRow>,
+    pub max_percent: u32,
 }
 
 impl AudioPopupModel {
     pub fn new() -> Result<Self> {
-        let config = AudioPopupConfig::load()?;
+        let file: AudioPopupFile = config::load_module("audio")?;
+        file.popup.validate()?;
+        ensure!(file.max_percent > 0, "audio max_percent must be positive");
         let outputs = read_outputs()?;
-        Ok(Self { config, outputs })
+        Ok(Self {
+            config: file.popup,
+            outputs,
+            max_percent: file.max_percent,
+        })
     }
 
     pub fn refresh(&mut self) -> Result<()> {
@@ -164,6 +208,147 @@ impl AudioPopupModel {
                     .row_height
                     .saturating_mul(self.outputs.len().max(1) as i32),
             )
+    }
+
+    pub fn row_geometry(&self, index: usize) -> Option<AudioRowGeometry> {
+        if index >= self.outputs.len() {
+            return None;
+        }
+        let row_y = self
+            .config
+            .padding
+            .saturating_add(self.config.title_height)
+            .saturating_add(1)
+            .saturating_add(self.config.row_height.saturating_mul(index as i32));
+        let row_h = self.config.row_height;
+        let inset = 6;
+        let mute_x = self.config.padding.saturating_add(inset);
+        let mute_w = self.config.mute_width.min((self.config.width / 4).max(1));
+        let mute_h = (row_h - 18).clamp(20, 28);
+        let mute_y = row_y + (row_h - mute_h) / 2;
+        let percent_w = 48;
+        let percent_x = self
+            .config
+            .width
+            .saturating_sub(self.config.padding)
+            .saturating_sub(inset)
+            .saturating_sub(percent_w);
+        let max_slider_w = percent_x
+            .saturating_sub(8)
+            .saturating_sub(mute_x.saturating_add(mute_w))
+            .saturating_sub(90)
+            .max(48);
+        let slider_w = self.config.slider_width.min(max_slider_w).max(48);
+        let slider_x = percent_x.saturating_sub(8).saturating_sub(slider_w);
+        let slider_h = self.config.slider_height.max(1);
+        let slider_y = row_y + (row_h - slider_h) / 2;
+        let text_x = mute_x.saturating_add(mute_w).saturating_add(10);
+        let text_w = slider_x.saturating_sub(10).saturating_sub(text_x).max(1);
+
+        Some(AudioRowGeometry {
+            row_y,
+            row_h,
+            mute_x,
+            mute_y,
+            mute_w,
+            mute_h,
+            text_x,
+            text_w,
+            slider_x,
+            slider_y,
+            slider_w,
+            slider_h,
+            percent_x,
+            percent_w,
+        })
+    }
+
+    pub fn row_at(&self, x: f64, y: f64) -> Option<usize> {
+        if x < self.config.padding as f64 || x >= (self.config.width - self.config.padding) as f64 {
+            return None;
+        }
+        let rows_y = self.config.padding + self.config.title_height + 1;
+        let local_y = y - rows_y as f64;
+        if local_y < 0.0 {
+            return None;
+        }
+        let index = (local_y / self.config.row_height as f64).floor() as usize;
+        (index < self.outputs.len()).then_some(index)
+    }
+
+    pub fn mute_at(&self, x: f64, y: f64) -> Option<usize> {
+        let index = self.row_at(x, y)?;
+        let g = self.row_geometry(index)?;
+        (x >= g.mute_x as f64
+            && x < (g.mute_x + g.mute_w) as f64
+            && y >= g.mute_y as f64
+            && y < (g.mute_y + g.mute_h) as f64)
+            .then_some(index)
+    }
+
+    pub fn volume_at(&self, x: f64, y: f64) -> Option<(usize, u32)> {
+        let index = self.row_at(x, y)?;
+        let g = self.row_geometry(index)?;
+        let hit_top = g.slider_y.saturating_sub(8);
+        let hit_bottom = g.slider_y.saturating_add(g.slider_h).saturating_add(8);
+        if y < hit_top as f64 || y >= hit_bottom as f64 {
+            return None;
+        }
+        if x < g.slider_x as f64 || x > (g.slider_x + g.slider_w) as f64 {
+            return None;
+        }
+        Some((index, self.volume_percent_for_x(index, x)?))
+    }
+
+    pub fn volume_percent_for_x(&self, index: usize, x: f64) -> Option<u32> {
+        let g = self.row_geometry(index)?;
+        let ratio = ((x - g.slider_x as f64) / g.slider_w.max(1) as f64).clamp(0.0, 1.0);
+        Some((ratio * self.max_percent as f64).round() as u32)
+    }
+
+    pub fn toggle_mute(&mut self, index: usize) -> Result<()> {
+        let (backend, id) = self
+            .outputs
+            .get(index)
+            .map(|row| (row.backend, row.id.clone()))
+            .ok_or_else(|| anyhow::anyhow!("audio output row {index} is unavailable"))?;
+        match backend {
+            AudioOutputBackend::PulseAudio => {
+                run_command("pactl", &["set-sink-mute", &id, "toggle"])?
+            }
+            AudioOutputBackend::PipeWire => run_command("wpctl", &["set-mute", &id, "toggle"])?,
+        }
+        if let Some(row) = self.outputs.get_mut(index) {
+            row.muted = !row.muted;
+        }
+        Ok(())
+    }
+
+    pub fn set_volume(&mut self, index: usize, percent: u32) -> Result<bool> {
+        let percent = percent.min(self.max_percent);
+        let (backend, id, current) = self
+            .outputs
+            .get(index)
+            .map(|row| (row.backend, row.id.clone(), row.percent))
+            .ok_or_else(|| anyhow::anyhow!("audio output row {index} is unavailable"))?;
+        if current == percent {
+            return Ok(false);
+        }
+
+        match backend {
+            AudioOutputBackend::PulseAudio => {
+                let volume = format!("{percent}%");
+                run_command("pactl", &["set-sink-volume", &id, &volume])?;
+            }
+            AudioOutputBackend::PipeWire => {
+                let volume = format!("{:.3}", percent as f64 / 100.0);
+                run_command("wpctl", &["set-volume", &id, &volume])?;
+            }
+        }
+        if let Some(row) = self.outputs.get_mut(index) {
+            row.percent = percent;
+        }
+        Ok(true)
     }
 }
 
@@ -275,6 +460,7 @@ fn parse_pactl_sinks(json: &str, default_sink: &str) -> Result<Vec<AudioOutputRo
                 percent,
                 muted: sink.mute,
                 is_default: !default_sink.is_empty() && sink.name == default_sink,
+                backend: AudioOutputBackend::PulseAudio,
             }
         })
         .collect::<Vec<_>>();
@@ -349,6 +535,7 @@ fn read_wpctl_outputs() -> Result<Vec<AudioOutputRow>> {
             percent: state.0,
             muted: state.1,
             is_default,
+            backend: AudioOutputBackend::PipeWire,
         });
     }
 
@@ -385,6 +572,18 @@ fn command_output(program: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn run_command(program: &str, args: &[&str]) -> Result<()> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to execute {program}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("{program} command failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
 fn default_enabled() -> bool {
     true
 }
@@ -399,6 +598,18 @@ fn default_title_height() -> i32 {
 }
 fn default_row_height() -> i32 {
     54
+}
+fn default_mute_width() -> i32 {
+    48
+}
+fn default_slider_width() -> i32 {
+    160
+}
+fn default_slider_height() -> i32 {
+    5
+}
+fn default_max_percent() -> u32 {
+    150
 }
 fn default_refresh_interval_ms() -> u64 {
     1000
@@ -435,7 +646,53 @@ fn default_popup_style() -> ModuleStyle {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_pactl_sinks, parse_wpctl_volume};
+    use super::{
+        AudioOutputBackend, AudioOutputRow, AudioPopupConfig, AudioPopupModel, parse_pactl_sinks,
+        parse_wpctl_volume,
+    };
+
+    fn interactive_model() -> AudioPopupModel {
+        AudioPopupModel {
+            config: AudioPopupConfig::default(),
+            outputs: vec![AudioOutputRow {
+                id: "sink.test".into(),
+                name: "Test output".into(),
+                detail: "Test sink".into(),
+                percent: 50,
+                muted: false,
+                is_default: true,
+                backend: AudioOutputBackend::PulseAudio,
+            }],
+            max_percent: 150,
+        }
+    }
+
+    #[test]
+    fn popup_controls_hit_same_audio_row() {
+        let model = interactive_model();
+        let geometry = model.row_geometry(0).unwrap();
+        assert_eq!(
+            model.mute_at(
+                (geometry.mute_x + geometry.mute_w / 2) as f64,
+                (geometry.mute_y + geometry.mute_h / 2) as f64
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            model.volume_at(
+                geometry.slider_x as f64,
+                (geometry.slider_y + geometry.slider_h / 2) as f64
+            ),
+            Some((0, 0))
+        );
+        assert_eq!(
+            model.volume_at(
+                (geometry.slider_x + geometry.slider_w) as f64,
+                (geometry.slider_y + geometry.slider_h / 2) as f64
+            ),
+            Some((0, 150))
+        );
+    }
 
     #[test]
     fn parses_wpctl_sink_volume() {

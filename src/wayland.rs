@@ -488,6 +488,7 @@ struct AudioPopupSurface {
     panel_x: f64,
     panel_y: f64,
     next_refresh: Instant,
+    dragging_volume: Option<usize>,
 }
 
 #[cfg(mhypr_module = "brightness")]
@@ -2323,6 +2324,10 @@ impl App {
         if now < popup.next_refresh {
             return;
         }
+        if popup.dragging_volume.is_some() {
+            popup.next_refresh = now + popup.model.config.refresh_interval();
+            return;
+        }
         if let Err(error) = popup.model.refresh() {
             eprintln!("mhyprbar: audio popup refresh failed: {error:#}");
         }
@@ -2419,6 +2424,7 @@ impl App {
             panel_x,
             panel_y,
             next_refresh,
+            dragging_volume: None,
         });
         Ok(true)
     }
@@ -4544,23 +4550,91 @@ impl PointerHandler for App {
                 .as_ref()
                 .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
             {
+                let mut redraw = false;
+                let mut refresh_bar = false;
                 match event.kind {
-                    PointerEventKind::Press { button, .. }
-                        if button == BTN_LEFT || button == BTN_RIGHT =>
-                    {
-                        let inside = self.audio_popup.as_ref().is_some_and(|popup| {
-                            event.position.0 >= popup.panel_x
-                                && event.position.0
-                                    < popup.panel_x + popup.model.config.width as f64
-                                && event.position.1 >= popup.panel_y
-                                && event.position.1
-                                    < popup.panel_y + popup.model.panel_height() as f64
-                        });
-                        if !inside || button == BTN_RIGHT {
-                            self.close_audio_popup();
+                    PointerEventKind::Motion { .. } => {
+                        if let Some(popup) = self.audio_popup.as_mut()
+                            && let Some(index) = popup.dragging_volume
+                        {
+                            let local_x = event.position.0 - popup.panel_x;
+                            if let Some(percent) = popup.model.volume_percent_for_x(index, local_x) {
+                                match popup.model.set_volume(index, percent) {
+                                    Ok(changed) => redraw |= changed,
+                                    Err(error) => {
+                                        eprintln!(
+                                            "mhyprbar: audio popup volume drag failed: {error:#}"
+                                        );
+                                        popup.dragging_volume = None;
+                                    }
+                                }
+                            }
                         }
                     }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let Some(popup) = self.audio_popup.as_mut() else {
+                            continue;
+                        };
+                        let local_x = event.position.0 - popup.panel_x;
+                        let local_y = event.position.1 - popup.panel_y;
+                        let inside = local_x >= 0.0
+                            && local_x < popup.model.config.width as f64
+                            && local_y >= 0.0
+                            && local_y < popup.model.panel_height() as f64;
+                        if !inside {
+                            self.close_audio_popup();
+                            continue;
+                        }
+
+                        if let Some(index) = popup.model.mute_at(local_x, local_y) {
+                            match popup.model.toggle_mute(index) {
+                                Ok(()) => {
+                                    redraw = true;
+                                    refresh_bar = true;
+                                }
+                                Err(error) => {
+                                    eprintln!("mhyprbar: audio output mute failed: {error:#}");
+                                }
+                            }
+                        } else if let Some((index, percent)) =
+                            popup.model.volume_at(local_x, local_y)
+                        {
+                            popup.dragging_volume = Some(index);
+                            match popup.model.set_volume(index, percent) {
+                                Ok(changed) => redraw |= changed,
+                                Err(error) => {
+                                    eprintln!("mhyprbar: audio output volume failed: {error:#}");
+                                    popup.dragging_volume = None;
+                                }
+                            }
+                        }
+                    }
+                    PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
+                        if let Some(popup) = self.audio_popup.as_mut()
+                            && popup.dragging_volume.take().is_some()
+                        {
+                            refresh_bar = true;
+                        }
+                    }
+                    PointerEventKind::Leave { .. } => {
+                        if let Some(popup) = self.audio_popup.as_mut()
+                            && popup.dragging_volume.take().is_some()
+                        {
+                            refresh_bar = true;
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_audio_popup();
+                        continue;
+                    }
                     _ => {}
+                }
+                if refresh_bar {
+                    self.modules.force_refresh("audio");
+                    self.draw_all();
+                }
+                if redraw {
+                    self.draw_audio_popup();
                 }
                 continue;
             }

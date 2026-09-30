@@ -1378,63 +1378,67 @@ impl Renderer {
 
         let mut detail_style = cfg.style.clone();
         detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
-        let percent_w = 58;
-        for output in &model.outputs {
+        for (index, output) in model.outputs.iter().enumerate() {
+            let Some(g) = model.row_geometry(index) else {
+                continue;
+            };
             let row = Rect {
-                x: content_x,
-                y,
+                x: panel.x + cfg.padding,
+                y: panel.y + g.row_y,
                 w: content_w,
-                h: cfg.row_height,
+                h: g.row_h,
             };
             if output.is_default {
                 fill_rect(canvas, width, height, row, active_background);
             }
 
-            let top_h = (cfg.row_height * 3 / 5).max(1);
-            let left_x = row.x + 8;
-            let right_x = row.x + row.w - percent_w - 8;
-            let label = if output.is_default {
-                format!("{} · default", output.name)
-            } else {
-                output.name.clone()
+            let mute_rect = Rect {
+                x: panel.x + g.mute_x,
+                y: panel.y + g.mute_y,
+                w: g.mute_w,
+                h: g.mute_h,
             };
-            self.draw_text_content(
+            draw_rect_border(
                 canvas,
                 width,
                 height,
-                Rect {
-                    x: left_x,
-                    y: row.y,
-                    w: (right_x - left_x - 8).max(1),
-                    h: top_h,
-                },
-                &label,
-                &cfg.style,
-                0,
-                0,
-            )?;
-
-            let percent_text = if output.muted {
-                format!("{}% M", output.percent)
-            } else {
-                format!("{}%", output.percent)
-            };
-            let mut percent_style = cfg.style.clone();
+                mute_rect,
+                if output.muted { muted } else { separator },
+                1,
+            );
+            let mut mute_style = cfg.style.clone();
             if output.muted {
-                percent_style.foreground = cfg.muted.clone();
+                mute_style.foreground = cfg.muted.clone();
             }
             self.draw_text_content(
                 canvas,
                 width,
                 height,
+                mute_rect,
+                if output.muted { "MUTED" } else { "MUTE" },
+                &mute_style,
+                6,
+                0,
+            )?;
+
+            let label = if output.is_default {
+                format!("{} · default", output.name)
+            } else {
+                output.name.clone()
+            };
+            let top_h = (g.row_h / 2).max(1);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
                 Rect {
-                    x: right_x,
+                    x: panel.x + g.text_x,
                     y: row.y,
-                    w: percent_w,
+                    w: g.text_w,
                     h: top_h,
                 },
-                &percent_text,
-                &percent_style,
+                &label,
+                &cfg.style,
                 0,
                 0,
             )?;
@@ -1444,19 +1448,15 @@ impl Renderer {
             } else {
                 output.detail.as_str()
             };
-            let detail_y = row.y + top_h;
-            let bar_h = 4;
-            let bar_y = row.y + row.h - bar_h - 6;
-            let detail_h = (bar_y - detail_y - 3).max(1);
             self.draw_text_content(
                 canvas,
                 width,
                 height,
                 Rect {
-                    x: left_x,
-                    y: detail_y,
-                    w: (row.w - 16).max(1),
-                    h: detail_h,
+                    x: panel.x + g.text_x,
+                    y: row.y + top_h,
+                    w: g.text_w,
+                    h: (g.row_h - top_h).max(1),
                 },
                 detail,
                 &detail_style,
@@ -1464,30 +1464,69 @@ impl Renderer {
                 0,
             )?;
 
-            let bar = Rect {
-                x: left_x,
-                y: bar_y,
-                w: (row.w - 16).max(1),
-                h: bar_h,
+            let slider = Rect {
+                x: panel.x + g.slider_x,
+                y: panel.y + g.slider_y,
+                w: g.slider_w,
+                h: g.slider_h,
             };
-            fill_rect(canvas, width, height, bar, bar_background);
-            let fill_w = ((bar.w as f32 * output.percent.min(150) as f32 / 150.0).round()
-                as i32)
-                .clamp(0, bar.w);
+            fill_rect(canvas, width, height, slider, bar_background);
+            let fill_w = ((slider.w as f32
+                * output.percent.min(model.max_percent) as f32
+                / model.max_percent.max(1) as f32)
+                .round() as i32)
+                .clamp(0, slider.w);
             if fill_w > 0 {
                 fill_rect(
                     canvas,
                     width,
                     height,
                     Rect {
-                        x: bar.x,
-                        y: bar.y,
+                        x: slider.x,
+                        y: slider.y,
                         w: fill_w,
-                        h: bar.h,
+                        h: slider.h,
                     },
                     if output.muted { muted } else { bar_fill },
                 );
             }
+            let knob_x = slider
+                .x
+                .saturating_add(fill_w)
+                .saturating_sub(1)
+                .clamp(slider.x, slider.x + slider.w - 2);
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: knob_x,
+                    y: slider.y.saturating_sub(4),
+                    w: 2,
+                    h: slider.h.saturating_add(8),
+                },
+                if output.muted { muted } else { bar_fill },
+            );
+
+            let mut percent_style = cfg.style.clone();
+            if output.muted {
+                percent_style.foreground = cfg.muted.clone();
+            }
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: panel.x + g.percent_x,
+                    y: row.y,
+                    w: g.percent_w,
+                    h: row.h,
+                },
+                &format!("{}%", output.percent),
+                &percent_style,
+                0,
+                0,
+            )?;
 
             y += cfg.row_height;
             fill_rect(
