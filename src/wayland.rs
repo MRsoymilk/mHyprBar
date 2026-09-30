@@ -501,6 +501,7 @@ struct BrightnessPopupSurface {
     panel_x: f64,
     panel_y: f64,
     next_refresh: Instant,
+    dragging_brightness: Option<usize>,
 }
 
 #[cfg(mhypr_module = "layout")]
@@ -2493,6 +2494,10 @@ impl App {
         if now < popup.next_refresh {
             return;
         }
+        if popup.dragging_brightness.is_some() {
+            popup.next_refresh = now + popup.model.config.refresh_interval();
+            return;
+        }
         if let Err(error) = popup.model.refresh() {
             eprintln!("mhyprbar: brightness popup refresh failed: {error:#}");
         }
@@ -2589,6 +2594,7 @@ impl App {
             panel_x,
             panel_y,
             next_refresh,
+            dragging_brightness: None,
         });
         Ok(true)
     }
@@ -4645,23 +4651,81 @@ impl PointerHandler for App {
                 .as_ref()
                 .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
             {
+                let mut redraw = false;
+                let mut refresh_bar = false;
                 match event.kind {
-                    PointerEventKind::Press { button, .. }
-                        if button == BTN_LEFT || button == BTN_RIGHT =>
-                    {
-                        let inside = self.brightness_popup.as_ref().is_some_and(|popup| {
-                            event.position.0 >= popup.panel_x
-                                && event.position.0
-                                    < popup.panel_x + popup.model.config.width as f64
-                                && event.position.1 >= popup.panel_y
-                                && event.position.1
-                                    < popup.panel_y + popup.model.panel_height() as f64
-                        });
-                        if !inside || button == BTN_RIGHT {
-                            self.close_brightness_popup();
+                    PointerEventKind::Motion { .. } => {
+                        if let Some(popup) = self.brightness_popup.as_mut()
+                            && let Some(index) = popup.dragging_brightness
+                        {
+                            let local_x = event.position.0 - popup.panel_x;
+                            if let Some(percent) = popup.model.percent_for_x(index, local_x) {
+                                match popup.model.set_percent(index, percent) {
+                                    Ok(changed) => redraw |= changed,
+                                    Err(error) => {
+                                        eprintln!(
+                                            "mhyprbar: brightness popup drag failed: {error:#}"
+                                        );
+                                        popup.dragging_brightness = None;
+                                    }
+                                }
+                            }
                         }
                     }
+                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                        let Some(popup) = self.brightness_popup.as_mut() else {
+                            continue;
+                        };
+                        let local_x = event.position.0 - popup.panel_x;
+                        let local_y = event.position.1 - popup.panel_y;
+                        let inside = local_x >= 0.0
+                            && local_x < popup.model.config.width as f64
+                            && local_y >= 0.0
+                            && local_y < popup.model.panel_height() as f64;
+                        if !inside {
+                            self.close_brightness_popup();
+                            continue;
+                        }
+
+                        if let Some((index, percent)) =
+                            popup.model.brightness_at(local_x, local_y)
+                        {
+                            popup.dragging_brightness = Some(index);
+                            match popup.model.set_percent(index, percent) {
+                                Ok(changed) => redraw |= changed,
+                                Err(error) => {
+                                    eprintln!("mhyprbar: brightness adjustment failed: {error:#}");
+                                    popup.dragging_brightness = None;
+                                }
+                            }
+                        }
+                    }
+                    PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
+                        if let Some(popup) = self.brightness_popup.as_mut()
+                            && popup.dragging_brightness.take().is_some()
+                        {
+                            refresh_bar = true;
+                        }
+                    }
+                    PointerEventKind::Leave { .. } => {
+                        if let Some(popup) = self.brightness_popup.as_mut()
+                            && popup.dragging_brightness.take().is_some()
+                        {
+                            refresh_bar = true;
+                        }
+                    }
+                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                        self.close_brightness_popup();
+                        continue;
+                    }
                     _ => {}
+                }
+                if refresh_bar {
+                    self.modules.force_refresh("brightness");
+                    self.draw_all();
+                }
+                if redraw {
+                    self.draw_brightness_popup();
                 }
                 continue;
             }

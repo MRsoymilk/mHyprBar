@@ -41,6 +41,8 @@ pub struct BrightnessPopupConfig {
 struct BrightnessPopupFile {
     #[serde(default = "default_device")]
     device: String,
+    #[serde(default = "default_min_percent")]
+    min_percent: u32,
     #[serde(default)]
     popup: BrightnessPopupConfig,
 }
@@ -127,9 +129,20 @@ pub struct BrightnessDeviceRow {
     pub active: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct BrightnessRowGeometry {
+    pub row_y: i32,
+    pub row_h: i32,
+    pub slider_x: i32,
+    pub slider_y: i32,
+    pub slider_w: i32,
+    pub slider_h: i32,
+}
+
 pub struct BrightnessPopupModel {
     pub config: BrightnessPopupConfig,
     pub devices: Vec<BrightnessDeviceRow>,
+    pub min_percent: u32,
     requested_device: String,
 }
 
@@ -137,9 +150,14 @@ impl BrightnessPopupModel {
     pub fn new() -> Result<Self> {
         let file: BrightnessPopupFile = config::load_module("brightness")?;
         file.popup.validate()?;
+        ensure!(
+            file.min_percent <= 100,
+            "brightness min_percent must be <= 100"
+        );
         let mut model = Self {
             config: file.popup,
             devices: Vec::new(),
+            min_percent: file.min_percent,
             requested_device: file.device,
         };
         model.refresh()?;
@@ -162,6 +180,93 @@ impl BrightnessPopupModel {
                     .row_height
                     .saturating_mul(self.devices.len().max(1) as i32),
             )
+    }
+
+    pub fn row_geometry(&self, index: usize) -> Option<BrightnessRowGeometry> {
+        if index >= self.devices.len() {
+            return None;
+        }
+        let row_y = self
+            .config
+            .padding
+            .saturating_add(self.config.title_height)
+            .saturating_add(1)
+            .saturating_add(self.config.row_height.saturating_mul(index as i32));
+        let row_h = self.config.row_height;
+        let inset = 8;
+        let slider_h = 5;
+        let slider_x = self.config.padding.saturating_add(inset);
+        let slider_w = self
+            .config
+            .width
+            .saturating_sub(self.config.padding.saturating_mul(2))
+            .saturating_sub(inset.saturating_mul(2))
+            .max(1);
+        let slider_y = row_y + row_h - slider_h - 6;
+        Some(BrightnessRowGeometry {
+            row_y,
+            row_h,
+            slider_x,
+            slider_y,
+            slider_w,
+            slider_h,
+        })
+    }
+
+    pub fn row_at(&self, x: f64, y: f64) -> Option<usize> {
+        if x < self.config.padding as f64 || x >= (self.config.width - self.config.padding) as f64 {
+            return None;
+        }
+        let rows_y = self.config.padding + self.config.title_height + 1;
+        let local_y = y - rows_y as f64;
+        if local_y < 0.0 {
+            return None;
+        }
+        let index = (local_y / self.config.row_height as f64).floor() as usize;
+        (index < self.devices.len()).then_some(index)
+    }
+
+    pub fn brightness_at(&self, x: f64, y: f64) -> Option<(usize, u32)> {
+        let index = self.row_at(x, y)?;
+        let g = self.row_geometry(index)?;
+        let hit_top = g.slider_y.saturating_sub(8);
+        let hit_bottom = g.slider_y.saturating_add(g.slider_h).saturating_add(8);
+        if y < hit_top as f64 || y >= hit_bottom as f64 {
+            return None;
+        }
+        if x < g.slider_x as f64 || x > (g.slider_x + g.slider_w) as f64 {
+            return None;
+        }
+        Some((index, self.percent_for_x(index, x)?))
+    }
+
+    pub fn percent_for_x(&self, index: usize, x: f64) -> Option<u32> {
+        let g = self.row_geometry(index)?;
+        let ratio = ((x - g.slider_x as f64) / g.slider_w.max(1) as f64).clamp(0.0, 1.0);
+        let span = 100_u32.saturating_sub(self.min_percent);
+        Some(self.min_percent + (ratio * span as f64).round() as u32)
+    }
+
+    pub fn set_percent(&mut self, index: usize, percent: u32) -> Result<bool> {
+        let percent = percent.clamp(self.min_percent, 100);
+        let (name, max, current_percent) = self
+            .devices
+            .get(index)
+            .map(|device| (device.name.clone(), device.max, device.percent))
+            .ok_or_else(|| anyhow::anyhow!("brightness device row {index} is unavailable"))?;
+        if current_percent == percent {
+            return Ok(false);
+        }
+
+        let raw = ((max as u128 * percent as u128 + 50) / 100).clamp(1, max as u128) as u64;
+        let root = Path::new("/sys/class/backlight").join(&name);
+        fs::write(root.join("brightness"), raw.to_string())
+            .with_context(|| format!("failed to set brightness for {name}"))?;
+        if let Some(device) = self.devices.get_mut(index) {
+            device.current = raw;
+            device.percent = percent;
+        }
+        Ok(true)
     }
 }
 
@@ -228,6 +333,9 @@ fn read_u64(path: PathBuf) -> Result<u64> {
 fn default_device() -> String {
     "auto".into()
 }
+fn default_min_percent() -> u32 {
+    5
+}
 fn default_enabled() -> bool {
     true
 }
@@ -270,5 +378,42 @@ fn default_popup_style() -> ModuleStyle {
         padding_x: 0,
         padding_y: 0,
         min_width: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BrightnessDeviceRow, BrightnessPopupConfig, BrightnessPopupModel};
+
+    fn interactive_model() -> BrightnessPopupModel {
+        BrightnessPopupModel {
+            config: BrightnessPopupConfig::default(),
+            devices: vec![BrightnessDeviceRow {
+                name: "test_backlight".into(),
+                kind: "raw".into(),
+                current: 50,
+                max: 100,
+                percent: 50,
+                active: true,
+            }],
+            min_percent: 5,
+            requested_device: "auto".into(),
+        }
+    }
+
+    #[test]
+    fn popup_slider_maps_minimum_to_full_range() {
+        let model = interactive_model();
+        let geometry = model.row_geometry(0).unwrap();
+        let y = (geometry.slider_y + geometry.slider_h / 2) as f64;
+
+        assert_eq!(
+            model.brightness_at(geometry.slider_x as f64, y),
+            Some((0, 5))
+        );
+        assert_eq!(
+            model.brightness_at((geometry.slider_x + geometry.slider_w) as f64, y),
+            Some((0, 100))
+        );
     }
 }

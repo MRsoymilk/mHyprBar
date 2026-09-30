@@ -1052,12 +1052,15 @@ impl Renderer {
         let mut detail_style = cfg.style.clone();
         detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
         let percent_w = 58;
-        for device in &model.devices {
+        for (index, device) in model.devices.iter().enumerate() {
+            let Some(g) = model.row_geometry(index) else {
+                continue;
+            };
             let row = Rect {
                 x: content_x,
-                y,
+                y: panel.y + g.row_y,
                 w: content_w,
-                h: cfg.row_height,
+                h: g.row_h,
             };
             if device.active {
                 fill_rect(canvas, width, height, row, active_background);
@@ -1107,14 +1110,9 @@ impl Renderer {
             } else {
                 device.kind.as_str()
             };
-            let detail = format!(
-                "{kind} · raw {}/{}",
-                device.current, device.max
-            );
+            let detail = format!("{kind} · {}/{}", device.current, device.max);
             let detail_y = row.y + top_h;
-            let bar_h = 4;
-            let bar_y = row.y + row.h - bar_h - 6;
-            let detail_h = (bar_y - detail_y - 3).max(1);
+            let detail_h = ((panel.y + g.slider_y) - detail_y - 3).max(1);
             self.draw_text_content(
                 canvas,
                 width,
@@ -1132,15 +1130,19 @@ impl Renderer {
             )?;
 
             let bar = Rect {
-                x: left_x,
-                y: bar_y,
-                w: (row.w - 16).max(1),
-                h: bar_h,
+                x: panel.x + g.slider_x,
+                y: panel.y + g.slider_y,
+                w: g.slider_w,
+                h: g.slider_h,
             };
             fill_rect(canvas, width, height, bar, bar_background);
-            let fill_w = ((bar.w as f32 * device.percent.min(100) as f32 / 100.0).round()
-                as i32)
-                .clamp(0, bar.w);
+            let range = 100_u32.saturating_sub(model.min_percent).max(1);
+            let normalized = device
+                .percent
+                .clamp(model.min_percent, 100)
+                .saturating_sub(model.min_percent);
+            let fill_w =
+                ((bar.w as f32 * normalized as f32 / range as f32).round() as i32).clamp(0, bar.w);
             if fill_w > 0 {
                 fill_rect(
                     canvas,
@@ -1155,6 +1157,23 @@ impl Renderer {
                     bar_fill,
                 );
             }
+            let knob_x = bar
+                .x
+                .saturating_add(fill_w)
+                .saturating_sub(1)
+                .clamp(bar.x, bar.x + bar.w - 2);
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: knob_x,
+                    y: bar.y.saturating_sub(4),
+                    w: 2,
+                    h: bar.h.saturating_add(8),
+                },
+                bar_fill,
+            );
 
             y += cfg.row_height;
             fill_rect(
