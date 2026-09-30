@@ -1,5 +1,7 @@
 #[cfg(mhypr_module = "active_window")]
 mod active_window_popup;
+#[cfg(mhypr_module = "audio")]
+mod audio_popup;
 #[cfg(mhypr_module = "battery")]
 mod battery_popup;
 #[cfg(mhypr_module = "clock")]

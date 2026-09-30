@@ -33,14 +33,8 @@ struct AudioConfig {
     max_percent: u32,
     #[serde(default = "default_icon_scale")]
     icon_scale: f32,
-    #[serde(default = "default_bar_width")]
-    bar_width: i32,
-    #[serde(default = "default_bar_height")]
-    bar_height: i32,
     #[serde(default = "default_text_gap")]
     text_gap: i32,
-    #[serde(default = "default_bar_background")]
-    bar_background: String,
     #[serde(default = "default_fill")]
     fill: String,
     #[serde(default = "default_muted_fill")]
@@ -119,10 +113,7 @@ pub struct AudioVisual {
     pub icon_pixels: Arc<[u8]>,
     pub icon_width: i32,
     pub icon_height: i32,
-    pub bar_width: i32,
-    pub bar_height: i32,
     pub text_gap: i32,
-    pub bar_background: [u8; 4],
     pub fill: [u8; 4],
     pub muted_fill: [u8; 4],
 }
@@ -132,7 +123,6 @@ pub struct AudioModule {
     backend: AudioBackend,
     state: VolumeState,
     icons: AudioIcons,
-    bar_background: [u8; 4],
     fill: [u8; 4],
     muted_fill: [u8; 4],
     revision: u64,
@@ -148,7 +138,6 @@ impl AudioModule {
             muted: false,
         };
         let icons = AudioIcons::load()?;
-        let bar_background = config::parse_rgba(&config.bar_background)?;
         let fill = config::parse_rgba(&config.fill)?;
         let muted_fill = config::parse_rgba(&config.muted_fill)?;
 
@@ -157,7 +146,6 @@ impl AudioModule {
             backend,
             state,
             icons,
-            bar_background,
             fill,
             muted_fill,
             revision: 0,
@@ -275,10 +263,7 @@ impl StatusModule for AudioModule {
             icon_pixels: icon.pixels,
             icon_width: icon.width,
             icon_height: icon.height,
-            bar_width: self.config.bar_width,
-            bar_height: self.config.bar_height,
             text_gap: self.config.text_gap,
-            bar_background: self.bar_background,
             fill: self.fill,
             muted_fill: self.muted_fill,
         })
@@ -483,10 +468,6 @@ fn validate_config(config: &AudioConfig) -> Result<()> {
         "audio max_percent must be in 100..=200"
     );
     ensure!(
-        config.bar_width > 0 && config.bar_height > 0,
-        "audio bar dimensions must be positive"
-    );
-    ensure!(
         config.icon_scale.is_finite() && (0.1..=1.0).contains(&config.icon_scale),
         "audio icon_scale must be in 0.1..=1.0"
     );
@@ -604,20 +585,8 @@ fn default_icon_scale() -> f32 {
     1.0
 }
 
-fn default_bar_width() -> i32 {
-    32
-}
-
-fn default_bar_height() -> i32 {
-    4
-}
-
 fn default_text_gap() -> i32 {
     4
-}
-
-fn default_bar_background() -> String {
-    "#303030".into()
 }
 
 fn default_fill() -> String {

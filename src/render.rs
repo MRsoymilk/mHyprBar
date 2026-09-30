@@ -2497,35 +2497,6 @@ impl Renderer {
         let bar_x = icon_x
             .saturating_add(icon_size)
             .saturating_add(audio.text_gap);
-        let bar_y = rect.y + (rect.h - audio.bar_height) / 2;
-        let bar = Rect {
-            x: bar_x,
-            y: bar_y,
-            w: audio.bar_width,
-            h: audio.bar_height,
-        };
-        fill_rect(canvas, width, height, bar, audio.bar_background);
-        let fill_w = ((audio.bar_width as f32 * audio.percent.min(100) as f32 / 100.0).round()
-            as i32)
-            .clamp(0, audio.bar_width);
-        if fill_w > 0 {
-            fill_rect(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: bar.x,
-                    y: bar.y,
-                    w: fill_w,
-                    h: bar.h,
-                },
-                color,
-            );
-        }
-
-        let text_x = bar_x
-            .saturating_add(audio.bar_width)
-            .saturating_add(audio.text_gap);
         let right = rect.x.saturating_add(rect.w).saturating_sub(padding_x);
         self.draw_text_content(
             canvas,
@@ -2578,7 +2549,7 @@ impl Renderer {
             brightness.fill,
         );
 
-        let bar_x = icon_x
+        let text_x = icon_x
             .saturating_add(icon_size)
             .saturating_add(brightness.text_gap);
         let bar = Rect {
@@ -3809,8 +3780,6 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
         let percent_width = estimate_text_width("150%", style);
         let icon_slot = audio_icon_slot_size(audio, style, bar_height);
         let content = icon_slot
-            .saturating_add(audio.text_gap)
-            .saturating_add(audio.bar_width)
             .saturating_add(audio.text_gap)
             .saturating_add(percent_width);
         return style
