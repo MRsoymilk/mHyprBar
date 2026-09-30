@@ -965,6 +965,724 @@ impl Renderer {
         Ok(())
     }
 
+    #[cfg(mhypr_module = "brightness")]
+    pub fn draw_brightness_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::brightness_popup::BrightnessPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let active_background = cfg.active_background_rgba()?;
+        let bar_background = cfg.bar_background_rgba()?;
+        let bar_fill = cfg.bar_fill_rgba()?;
+
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let pad = cfg.padding;
+        let content_x = panel.x + pad;
+        let content_w = (panel.w - pad * 2).max(1);
+        let mut y = panel.y + pad;
+
+        let mut title_style = cfg.style.clone();
+        title_style.font_size = (cfg.style.font_size + 1.0).max(cfg.style.font_size);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: cfg.title_height,
+            },
+            &format!("Brightness devices · {}", model.devices.len()),
+            &title_style,
+            0,
+            0,
+        )?;
+        y += cfg.title_height;
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: 1,
+            },
+            separator,
+        );
+        y += 1;
+
+        if model.devices.is_empty() {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x,
+                    y,
+                    w: content_w,
+                    h: cfg.row_height,
+                },
+                "No brightness devices",
+                &cfg.style,
+                8,
+                0,
+            )?;
+            return Ok(());
+        }
+
+        let mut detail_style = cfg.style.clone();
+        detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
+        let percent_w = 58;
+        for device in &model.devices {
+            let row = Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: cfg.row_height,
+            };
+            if device.active {
+                fill_rect(canvas, width, height, row, active_background);
+            }
+
+            let top_h = (cfg.row_height * 3 / 5).max(1);
+            let left_x = row.x + 8;
+            let right_x = row.x + row.w - percent_w - 8;
+            let label = if device.active {
+                format!("{} · active", device.name)
+            } else {
+                device.name.clone()
+            };
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: left_x,
+                    y: row.y,
+                    w: (right_x - left_x - 8).max(1),
+                    h: top_h,
+                },
+                &label,
+                &cfg.style,
+                0,
+                0,
+            )?;
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: right_x,
+                    y: row.y,
+                    w: percent_w,
+                    h: top_h,
+                },
+                &format!("{}%", device.percent),
+                &cfg.style,
+                0,
+                0,
+            )?;
+
+            let kind = if device.kind.trim().is_empty() {
+                "unknown"
+            } else {
+                device.kind.as_str()
+            };
+            let detail = format!(
+                "{kind} · raw {}/{}",
+                device.current, device.max
+            );
+            let detail_y = row.y + top_h;
+            let bar_h = 4;
+            let bar_y = row.y + row.h - bar_h - 6;
+            let detail_h = (bar_y - detail_y - 3).max(1);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: left_x,
+                    y: detail_y,
+                    w: (row.w - 16).max(1),
+                    h: detail_h,
+                },
+                &detail,
+                &detail_style,
+                0,
+                0,
+            )?;
+
+            let bar = Rect {
+                x: left_x,
+                y: bar_y,
+                w: (row.w - 16).max(1),
+                h: bar_h,
+            };
+            fill_rect(canvas, width, height, bar, bar_background);
+            let fill_w = ((bar.w as f32 * device.percent.min(100) as f32 / 100.0).round()
+                as i32)
+                .clamp(0, bar.w);
+            if fill_w > 0 {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: bar.x,
+                        y: bar.y,
+                        w: fill_w,
+                        h: bar.h,
+                    },
+                    bar_fill,
+                );
+            }
+
+            y += cfg.row_height;
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x,
+                    y: y - 1,
+                    w: content_w,
+                    h: 1,
+                },
+                separator,
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "layout")]
+    pub fn draw_layout_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::layout_popup::LayoutPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let active_background = cfg.active_background_rgba()?;
+        let hover_background = cfg.hover_background_rgba()?;
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let pad = cfg.padding;
+        let content_x = panel.x + pad;
+        let content_w = (panel.w - pad * 2).max(1);
+        let mut y = panel.y + pad;
+
+        let mut title_style = cfg.style.clone();
+        title_style.font_size = (cfg.style.font_size + 1.0).max(cfg.style.font_size);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: cfg.title_height,
+            },
+            "Layout",
+            &title_style,
+            8,
+            0,
+        )?;
+        y += cfg.title_height;
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: 1,
+            },
+            separator,
+        );
+        y += 1;
+
+        for (index, row) in model.rows.iter().enumerate() {
+            let rect = Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: cfg.row_height,
+            };
+            if row.active {
+                fill_rect(canvas, width, height, rect, active_background);
+            } else if model.hovered_row == Some(index) {
+                fill_rect(canvas, width, height, rect, hover_background);
+            }
+
+            let label = if row.active {
+                format!("{}  ·  current", row.label)
+            } else {
+                row.label.clone()
+            };
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: rect.x + 10,
+                    y: rect.y,
+                    w: (rect.w - 20).max(1),
+                    h: rect.h,
+                },
+                &label,
+                &cfg.style,
+                0,
+                0,
+            )?;
+
+            y += cfg.row_height;
+            if index + 1 < model.rows.len() {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: content_x,
+                        y: y - 1,
+                        w: content_w,
+                        h: 1,
+                    },
+                    separator,
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "audio")]
+    pub fn draw_audio_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::audio_popup::AudioPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let active_background = cfg.active_background_rgba()?;
+        let muted = cfg.muted_rgba()?;
+        let bar_background = cfg.bar_background_rgba()?;
+        let bar_fill = cfg.bar_fill_rgba()?;
+
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let pad = cfg.padding;
+        let content_x = panel.x + pad;
+        let content_w = (panel.w - pad * 2).max(1);
+        let mut y = panel.y + pad;
+
+        let mut title_style = cfg.style.clone();
+        title_style.font_size = (cfg.style.font_size + 1.0).max(cfg.style.font_size);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: cfg.title_height,
+            },
+            &format!("Audio outputs · {}", model.outputs.len()),
+            &title_style,
+            0,
+            0,
+        )?;
+        y += cfg.title_height;
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: 1,
+            },
+            separator,
+        );
+        y += 1;
+
+        if model.outputs.is_empty() {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x,
+                    y,
+                    w: content_w,
+                    h: cfg.row_height,
+                },
+                "No audio outputs",
+                &cfg.style,
+                8,
+                0,
+            )?;
+            return Ok(());
+        }
+
+        let mut detail_style = cfg.style.clone();
+        detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
+        let percent_w = 58;
+        for output in &model.outputs {
+            let row = Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: cfg.row_height,
+            };
+            if output.is_default {
+                fill_rect(canvas, width, height, row, active_background);
+            }
+
+            let top_h = (cfg.row_height * 3 / 5).max(1);
+            let left_x = row.x + 8;
+            let right_x = row.x + row.w - percent_w - 8;
+            let label = if output.is_default {
+                format!("{} · default", output.name)
+            } else {
+                output.name.clone()
+            };
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: left_x,
+                    y: row.y,
+                    w: (right_x - left_x - 8).max(1),
+                    h: top_h,
+                },
+                &label,
+                &cfg.style,
+                0,
+                0,
+            )?;
+
+            let percent_text = if output.muted {
+                format!("{}% M", output.percent)
+            } else {
+                format!("{}%", output.percent)
+            };
+            let mut percent_style = cfg.style.clone();
+            if output.muted {
+                percent_style.foreground = cfg.muted.clone();
+            }
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: right_x,
+                    y: row.y,
+                    w: percent_w,
+                    h: top_h,
+                },
+                &percent_text,
+                &percent_style,
+                0,
+                0,
+            )?;
+
+            let detail = if output.detail.trim().is_empty() {
+                output.id.as_str()
+            } else {
+                output.detail.as_str()
+            };
+            let detail_y = row.y + top_h;
+            let bar_h = 4;
+            let bar_y = row.y + row.h - bar_h - 6;
+            let detail_h = (bar_y - detail_y - 3).max(1);
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: left_x,
+                    y: detail_y,
+                    w: (row.w - 16).max(1),
+                    h: detail_h,
+                },
+                detail,
+                &detail_style,
+                0,
+                0,
+            )?;
+
+            let bar = Rect {
+                x: left_x,
+                y: bar_y,
+                w: (row.w - 16).max(1),
+                h: bar_h,
+            };
+            fill_rect(canvas, width, height, bar, bar_background);
+            let fill_w = ((bar.w as f32 * output.percent.min(150) as f32 / 150.0).round()
+                as i32)
+                .clamp(0, bar.w);
+            if fill_w > 0 {
+                fill_rect(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: bar.x,
+                        y: bar.y,
+                        w: fill_w,
+                        h: bar.h,
+                    },
+                    if output.muted { muted } else { bar_fill },
+                );
+            }
+
+            y += cfg.row_height;
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x,
+                    y: y - 1,
+                    w: content_w,
+                    h: 1,
+                },
+                separator,
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "active_window")]
+    pub fn draw_active_window_popup(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        model: &crate::active_window_popup::ActiveWindowPopupModel,
+        panel_x: f64,
+        panel_y: f64,
+    ) -> Result<()> {
+        canvas.fill(0);
+        let cfg = &model.config;
+        let panel = Rect {
+            x: panel_x.round() as i32,
+            y: panel_y.round() as i32,
+            w: cfg.width,
+            h: model.panel_height(),
+        };
+        let background = cfg.style.background_rgba()?;
+        let border = cfg.border_rgba()?;
+        let separator = cfg.separator_rgba()?;
+        let active_background = cfg.active_background_rgba()?;
+        let hover_background = cfg.hover_background_rgba()?;
+        fill_rect(canvas, width, height, panel, background);
+        draw_rect_border(canvas, width, height, panel, border, 1);
+
+        let pad = cfg.padding;
+        let content_x = panel.x + pad;
+        let content_w = (panel.w - pad * 2).max(1);
+        let mut y = panel.y + pad;
+
+        let mut title_style = cfg.style.clone();
+        title_style.font_size = (cfg.style.font_size + 1.0).max(cfg.style.font_size);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: cfg.title_height,
+            },
+            &model.title,
+            &title_style,
+            0,
+            0,
+        )?;
+        y += cfg.title_height;
+        fill_rect(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: 1,
+            },
+            separator,
+        );
+        y += 1;
+
+        if model.rows.is_empty() {
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x,
+                    y,
+                    w: content_w,
+                    h: cfg.row_height,
+                },
+                "No windows",
+                &cfg.style,
+                8,
+                0,
+            )?;
+            return Ok(());
+        }
+
+        let mut detail_style = cfg.style.clone();
+        detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
+        for (index, window) in model.rows.iter().enumerate() {
+            let row = Rect {
+                x: content_x,
+                y,
+                w: content_w,
+                h: cfg.row_height,
+            };
+            if model.hovered_row == Some(index) {
+                fill_rect(canvas, width, height, row, hover_background);
+            } else if window.active {
+                fill_rect(canvas, width, height, row, active_background);
+            }
+
+            let icon_x = row.x + 8;
+            let icon_y = row.y + (row.h - cfg.icon_size) / 2;
+            let mut text_x = icon_x;
+            if let Some(icon) = window.icon.as_ref() {
+                draw_native_argb_pixmap(
+                    canvas,
+                    width,
+                    height,
+                    icon_x,
+                    icon_y,
+                    cfg.icon_size,
+                    icon.width,
+                    icon.height,
+                    &icon.pixels,
+                );
+                text_x += cfg.icon_size + 10;
+            }
+
+            let text_w = (row.x + row.w - 8 - text_x).max(1);
+            let top_h = (cfg.row_height / 2).max(1);
+            let title = if window.title.trim().is_empty() {
+                window.class.as_str()
+            } else {
+                window.title.as_str()
+            };
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: text_x,
+                    y: row.y,
+                    w: text_w,
+                    h: top_h,
+                },
+                title,
+                &cfg.style,
+                0,
+                0,
+            )?;
+
+            let detail = if window.active {
+                format!("{} · workspace {} · active", window.class, window.workspace_id)
+            } else {
+                format!("{} · workspace {}", window.class, window.workspace_id)
+            };
+            self.draw_text_content(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: text_x,
+                    y: row.y + top_h,
+                    w: text_w,
+                    h: row.h - top_h,
+                },
+                &detail,
+                &detail_style,
+                0,
+                0,
+            )?;
+
+            y += cfg.row_height;
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x: content_x,
+                    y: y - 1,
+                    w: content_w,
+                    h: 1,
+                },
+                separator,
+            );
+        }
+        Ok(())
+    }
+
     #[cfg(mhypr_module = "network")]
     pub fn draw_network_popup(
         &mut self,
@@ -2285,6 +3003,74 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn draw_workspace_window_dots(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        windows: u32,
+        style: &WorkspacesConfig,
+        color: [u8; 4],
+    ) {
+        if windows == 0 {
+            return;
+        }
+
+        let dot_w = style.window_dot_width.max(1);
+        let dot_h = style.window_dot_height.max(1);
+        let bar_w = style.window_group_bar_width.max(1);
+        let bar_h = style.window_group_bar_height.max(1);
+        let gap = style.window_dot_gap.max(0);
+        let mut x = rect.x.saturating_add(style.label_padding_x);
+        let bottom = rect
+            .y
+            .saturating_add(rect.h)
+            .saturating_sub(style.window_dot_bottom);
+
+        let bars = windows / 5;
+        let dots = windows % 5;
+
+        for index in 0..bars {
+            if index > 0 {
+                x = x.saturating_add(gap);
+            }
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x,
+                    y: bottom.saturating_sub(bar_h),
+                    w: bar_w,
+                    h: bar_h,
+                },
+                color,
+            );
+            x = x.saturating_add(bar_w);
+        }
+
+        for index in 0..dots {
+            if bars > 0 || index > 0 {
+                x = x.saturating_add(gap);
+            }
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x,
+                    y: bottom.saturating_sub(dot_h),
+                    w: dot_w,
+                    h: dot_h,
+                },
+                color,
+            );
+            x = x.saturating_add(dot_w);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn draw_workspace_label(
         &mut self,
         canvas: &mut [u8],
@@ -2367,6 +3153,10 @@ impl Renderer {
             }
 
             match &view.visual {
+                #[cfg(mhypr_module = "active_window")]
+                ModuleVisual::ActiveWindow(active_window) => {
+                    self.draw_active_window(canvas, width, height, rect, &view, active_window)?;
+                }
                 #[cfg(mhypr_module = "audio")]
                 ModuleVisual::Audio(audio) => {
                     self.draw_audio(canvas, width, height, rect, &view, audio)?;
@@ -2424,6 +3214,68 @@ impl Renderer {
             x = x.saturating_add(module_width);
         }
         Ok(())
+    }
+
+    #[cfg(mhypr_module = "active_window")]
+    fn draw_active_window(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        active_window: &crate::modules::active_window::ActiveWindowVisual,
+    ) -> Result<()> {
+        let padding_x = view.style.padding_x.max(0);
+        let padding_y = view.style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+        let mut text_x = rect.x.saturating_add(padding_x);
+
+        if let Some(icon) = active_window.icon.as_ref() {
+            let icon_size = active_window.icon_size.min(content_h).max(1);
+            let icon_y = rect
+                .y
+                .saturating_add(padding_y)
+                .saturating_add((content_h - icon_size) / 2);
+            draw_native_argb_pixmap(
+                canvas,
+                width,
+                height,
+                text_x,
+                icon_y,
+                icon_size,
+                icon.width,
+                icon.height,
+                &icon.pixels,
+            );
+            text_x = text_x.saturating_add(icon_size);
+            if !view.text.is_empty() {
+                text_x = text_x.saturating_add(active_window.icon_gap);
+            }
+        }
+
+        if view.text.is_empty() {
+            return Ok(());
+        }
+        let right = rect
+            .x
+            .saturating_add(rect.w)
+            .saturating_sub(padding_x);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: text_x,
+                y: rect.y,
+                w: right.saturating_sub(text_x).max(1),
+                h: rect.h,
+            },
+            view.text,
+            view.style,
+            0,
+            padding_y,
+        )
     }
 
     #[cfg(mhypr_module = "network")]
@@ -3004,74 +3856,6 @@ impl Renderer {
         let padding_x = view.style.padding_x.max(0);
         let padding_y = view.style.padding_y.max(0);
         let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
-    #[allow(clippy::too_many_arguments)]
-    fn draw_workspace_window_dots(
-        &mut self,
-        canvas: &mut [u8],
-        width: u32,
-        height: u32,
-        rect: Rect,
-        windows: u32,
-        style: &WorkspacesConfig,
-        color: [u8; 4],
-    ) {
-        if windows == 0 {
-            return;
-        }
-
-        let dot_w = style.window_dot_width.max(1);
-        let dot_h = style.window_dot_height.max(1);
-        let bar_w = style.window_group_bar_width.max(1);
-        let bar_h = style.window_group_bar_height.max(1);
-        let gap = style.window_dot_gap.max(0);
-        let mut x = rect.x.saturating_add(style.label_padding_x);
-        let bottom = rect
-            .y
-            .saturating_add(rect.h)
-            .saturating_sub(style.window_dot_bottom);
-
-        let bars = windows / 5;
-        let dots = windows % 5;
-
-        for index in 0..bars {
-            if index > 0 {
-                x = x.saturating_add(gap);
-            }
-            fill_rect(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x,
-                    y: bottom.saturating_sub(bar_h),
-                    w: bar_w,
-                    h: bar_h,
-                },
-                color,
-            );
-            x = x.saturating_add(bar_w);
-        }
-
-        for index in 0..dots {
-            if bars > 0 || index > 0 {
-                x = x.saturating_add(gap);
-            }
-            fill_rect(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x,
-                    y: bottom.saturating_sub(dot_h),
-                    w: dot_w,
-                    h: dot_h,
-                },
-                color,
-            );
-            x = x.saturating_add(dot_w);
-        }
-    }
-
         let icon_size = disk_icon_slot_size(disk, view.style, rect.h);
         let icon_x = rect.x.saturating_add(padding_x);
         let icon_y = rect
@@ -3175,10 +3959,6 @@ impl Renderer {
             icon_y,
             icon_w,
             gpu.icon_width,
-                #[cfg(mhypr_module = "active_window")]
-                ModuleVisual::ActiveWindow(active_window) => {
-                    self.draw_active_window(canvas, width, height, rect, &view, active_window)?;
-                }
             gpu.icon_height,
             &gpu.icon_pixels,
             icon_color,
@@ -3238,68 +4018,6 @@ impl Renderer {
                     w: percent_w,
                     h: row_h,
                 },
-    #[cfg(mhypr_module = "active_window")]
-    fn draw_active_window(
-        &mut self,
-        canvas: &mut [u8],
-        width: u32,
-        height: u32,
-        rect: Rect,
-        view: &ModuleView<'_>,
-        active_window: &crate::modules::active_window::ActiveWindowVisual,
-    ) -> Result<()> {
-        let padding_x = view.style.padding_x.max(0);
-        let padding_y = view.style.padding_y.max(0);
-        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
-        let mut text_x = rect.x.saturating_add(padding_x);
-
-        if let Some(icon) = active_window.icon.as_ref() {
-            let icon_size = active_window.icon_size.min(content_h).max(1);
-            let icon_y = rect
-                .y
-                .saturating_add(padding_y)
-                .saturating_add((content_h - icon_size) / 2);
-            draw_native_argb_pixmap(
-                canvas,
-                width,
-                height,
-                text_x,
-                icon_y,
-                icon_size,
-                icon.width,
-                icon.height,
-                &icon.pixels,
-            );
-            text_x = text_x.saturating_add(icon_size);
-            if !view.text.is_empty() {
-                text_x = text_x.saturating_add(active_window.icon_gap);
-            }
-        }
-
-        if view.text.is_empty() {
-            return Ok(());
-        }
-        let right = rect
-            .x
-            .saturating_add(rect.w)
-            .saturating_sub(padding_x);
-        self.draw_text_content(
-            canvas,
-            width,
-            height,
-            Rect {
-                x: text_x,
-                y: rect.y,
-                w: right.saturating_sub(text_x).max(1),
-                h: rect.h,
-            },
-            view.text,
-            view.style,
-            0,
-            padding_y,
-        )
-    }
-
                 &text,
                 style,
                 0,
@@ -3823,6 +4541,34 @@ fn memory_icon_slot_size(
 fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     if let Some(width) = view.width_override {
         return width.max(0);
+    }
+
+    #[cfg(mhypr_module = "active_window")]
+    if let ModuleVisual::ActiveWindow(active_window) = &view.visual {
+        let style = view.style;
+        let text_width = if view.text.is_empty() {
+            0
+        } else {
+            estimate_text_width(view.text, style)
+        };
+        let icon_width = active_window
+            .icon
+            .as_ref()
+            .map(|_| active_window.icon_size.max(1))
+            .unwrap_or(0);
+        if icon_width == 0 && text_width == 0 {
+            return 0;
+        }
+        let gap = if icon_width > 0 && text_width > 0 {
+            active_window.icon_gap
+        } else {
+            0
+        };
+        let content = icon_width.saturating_add(gap).saturating_add(text_width);
+        return style
+            .min_width
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
     }
 
     #[cfg(mhypr_module = "audio")]
@@ -4533,31 +5279,3 @@ fn blend_at(dst: &mut [u8], rgba: [u8; 4]) {
     dst[2] = ((rgba[0] as u16 * alpha + dst_r * inv) / 255) as u8;
     dst[3] = (alpha + dst_a * inv / 255).min(255) as u8;
 }
-    #[cfg(mhypr_module = "active_window")]
-    if let ModuleVisual::ActiveWindow(active_window) = &view.visual {
-        let style = view.style;
-        let text_width = if view.text.is_empty() {
-            0
-        } else {
-            estimate_text_width(view.text, style)
-        };
-        let icon_width = active_window
-            .icon
-            .as_ref()
-            .map(|_| active_window.icon_size.max(1))
-            .unwrap_or(0);
-        if icon_width == 0 && text_width == 0 {
-            return 0;
-        }
-        let gap = if icon_width > 0 && text_width > 0 {
-            active_window.icon_gap
-        } else {
-            0
-        };
-        let content = icon_width.saturating_add(gap).saturating_add(text_width);
-        return style
-            .min_width
-            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
-            .max(1);
-    }
-

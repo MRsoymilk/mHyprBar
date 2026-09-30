@@ -33,6 +33,8 @@ mod tray;
 #[cfg(mhypr_module = "tray")]
 mod tray_popup;
 mod wayland;
+#[cfg(mhypr_module = "active_window")]
+mod window_icon;
 
 use std::{collections::HashSet, env};
 
@@ -41,8 +43,6 @@ use anyhow::{Context, Result, bail};
 use crate::config::BarConfig;
 
 const NAME: &str = "mHyprBar";
-#[cfg(mhypr_module = "active_window")]
-mod window_icon;
 
 fn print_help() {
     println!("{NAME} {}", env!("CARGO_PKG_VERSION"));
