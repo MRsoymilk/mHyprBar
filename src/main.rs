@@ -4,6 +4,8 @@ mod active_window_popup;
 mod audio_popup;
 #[cfg(mhypr_module = "battery")]
 mod battery_popup;
+#[cfg(mhypr_module = "brightness")]
+mod brightness_popup;
 #[cfg(mhypr_module = "clock")]
 mod clock_popup;
 mod config;

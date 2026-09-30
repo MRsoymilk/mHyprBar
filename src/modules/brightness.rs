@@ -31,14 +31,8 @@ struct BrightnessConfig {
     min_percent: u32,
     #[serde(default = "default_icon_scale")]
     icon_scale: f32,
-    #[serde(default = "default_bar_width")]
-    bar_width: i32,
-    #[serde(default = "default_bar_height")]
-    bar_height: i32,
     #[serde(default = "default_text_gap")]
     text_gap: i32,
-    #[serde(default = "default_bar_background")]
-    bar_background: String,
     #[serde(default = "default_fill")]
     fill: String,
     #[serde(default)]
@@ -98,10 +92,7 @@ pub struct BrightnessVisual {
     pub icon_pixels: Arc<[u8]>,
     pub icon_width: i32,
     pub icon_height: i32,
-    pub bar_width: i32,
-    pub bar_height: i32,
     pub text_gap: i32,
-    pub bar_background: [u8; 4],
     pub fill: [u8; 4],
 }
 
@@ -110,7 +101,6 @@ pub struct BrightnessModule {
     root: PathBuf,
     state: BrightnessState,
     icons: BrightnessIcons,
-    bar_background: [u8; 4],
     fill: [u8; 4],
     revision: u64,
 }
@@ -122,7 +112,6 @@ impl BrightnessModule {
         let root = resolve_backlight_root(&config.device)?;
         let state = read_state(&root)?;
         let icons = BrightnessIcons::load()?;
-        let bar_background = config::parse_rgba(&config.bar_background)?;
         let fill = config::parse_rgba(&config.fill)?;
 
         Ok(Self {
@@ -130,7 +119,6 @@ impl BrightnessModule {
             root,
             state,
             icons,
-            bar_background,
             fill,
             revision: 0,
         })
@@ -180,10 +168,7 @@ impl StatusModule for BrightnessModule {
             icon_pixels: icon.pixels,
             icon_width: icon.width,
             icon_height: icon.height,
-            bar_width: self.config.bar_width,
-            bar_height: self.config.bar_height,
             text_gap: self.config.text_gap,
-            bar_background: self.bar_background,
             fill: self.fill,
         })
     }
@@ -378,10 +363,6 @@ fn validate_config(config: &BrightnessConfig) -> Result<()> {
         "brightness min_percent must be <= 100"
     );
     ensure!(
-        config.bar_width > 0 && config.bar_height > 0,
-        "brightness bar dimensions must be positive"
-    );
-    ensure!(
         config.icon_scale.is_finite() && (0.1..=1.0).contains(&config.icon_scale),
         "brightness icon_scale must be in 0.1..=1.0"
     );
@@ -467,20 +448,8 @@ fn default_icon_scale() -> f32 {
     1.0
 }
 
-fn default_bar_width() -> i32 {
-    32
-}
-
-fn default_bar_height() -> i32 {
-    4
-}
-
 fn default_text_gap() -> i32 {
     4
-}
-
-fn default_bar_background() -> String {
-    "#303030".into()
 }
 
 fn default_fill() -> String {
