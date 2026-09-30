@@ -4,6 +4,92 @@ A native Wayland status bar for Hyprland, intended to replace wibar.
 
 mHyprBar uses wlr-layer-shell directly through Smithay Client Toolkit. It does not depend on GTK or Qt.
 
+## Preview
+
+### Bar
+
+![mHyprBar](README/bar.jpg)
+
+### Popups
+
+#### Menu
+
+Application launcher provided by mHyprMenu.
+
+![Menu popup](README/popup-menu.jpg)
+
+#### Active Window
+
+Detailed view of open windows and the currently active window.
+
+![Active window popup](README/popup-active-window.jpg)
+
+#### CPU
+
+Per-core utilization, top CPU processes, and a process hover tooltip with PID, state, executable path, working directory and arguments.
+
+![CPU popup with process hover tooltip](README/popup-cpu.jpg)
+
+#### GPU
+
+GPU utilization, VRAM usage, device information and GPU process usage.
+
+![GPU popup](README/popup-gpu.jpg)
+
+#### Memory
+
+RAM and swap usage with per-process memory and swap statistics.
+
+![Memory popup](README/popup-memory.jpg)
+
+#### Network
+
+Network interfaces, addresses, link state and current interface details.
+
+![Network popup](README/popup-network.jpg)
+
+#### Monitor
+
+Connected outputs with mode, scale, position and display controls.
+
+![Monitor popup](README/popup-monitor.jpg)
+
+#### Disk
+
+Filesystem usage for the configured mount points.
+
+![Disk popup](README/popup-disk.jpg)
+
+#### Audio
+
+Available audio outputs with per-device mute and volume controls.
+
+![Audio popup](README/popup-audio.jpg)
+
+#### Brightness
+
+Available brightness devices with direct slider control.
+
+![Brightness popup](README/popup-brightness.jpg)
+
+#### Clock
+
+Calendar popup with the current date and month navigation.
+
+![Clock popup](README/popup-clock.jpg)
+
+#### Layout
+
+Quick switch between configured Hyprland layouts such as dwindle and floating.
+
+![Layout popup](README/popup-layout.jpg)
+
+#### Battery
+
+Charge level, charging state, health and remaining-time information.
+
+![Battery popup](README/popup-battery.jpg)
+
 ## Current status
 
 The base panel and first status-module renderer are implemented:
@@ -318,6 +404,8 @@ A running bar listens on `$XDG_RUNTIME_DIR/mhyprbar.sock` with user-only permiss
 ~~~bash
 mhyprbar --status
 mhyprbar --reload
+mhyprbar --popup cpu
+mhyprbar --popup-info cpu
 mhyprbar --tray-list
 mhyprbar --tray-menu 0
 mhyprbar --tray-tooltip 0
@@ -332,7 +420,9 @@ Changes to `build.modules.toml` are compile-time changes and still require rebui
 mHyprBar.
 
 `--status` prints the running PID, output count, position/height, tray item count, compiled
-modules and current left/center/right layout.
+modules and current left/center/right layout. `--popup NAME` toggles that module's popup on the
+focused output for debugging, while `--popup-info NAME` reports the live popup geometry and CPU
+process-tooltip geometry when available.
 
 `--tray-list` prints the current visual tray order with index, title, menu availability, SNI
 status, tooltip text, and per-output tray x ranges. `--tray-menu N` toggles item `N`'s
