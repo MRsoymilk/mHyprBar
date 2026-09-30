@@ -93,6 +93,22 @@ pub struct WorkspacesConfig {
     pub font_family: String,
     #[serde(default = "default_font_size")]
     pub font_size: f32,
+    #[serde(default = "default_workspace_label_padding_x")]
+    pub label_padding_x: i32,
+    #[serde(default = "default_workspace_label_padding_y")]
+    pub label_padding_y: i32,
+    #[serde(default = "default_workspace_window_dot_width")]
+    pub window_dot_width: i32,
+    #[serde(default = "default_workspace_window_dot_height")]
+    pub window_dot_height: i32,
+    #[serde(default = "default_workspace_window_dot_gap")]
+    pub window_dot_gap: i32,
+    #[serde(default = "default_workspace_window_group_bar_width")]
+    pub window_group_bar_width: i32,
+    #[serde(default = "default_workspace_window_group_bar_height")]
+    pub window_group_bar_height: i32,
+    #[serde(default = "default_workspace_window_dot_bottom")]
+    pub window_dot_bottom: i32,
     #[serde(default = "default_workspace_text")]
     pub text: String,
     #[serde(default = "default_workspace_empty")]
@@ -114,6 +130,14 @@ impl Default for WorkspacesConfig {
             margin_right: default_workspace_margin_right(),
             font_family: default_font_family(),
             font_size: default_font_size(),
+            label_padding_x: default_workspace_label_padding_x(),
+            label_padding_y: default_workspace_label_padding_y(),
+            window_dot_width: default_workspace_window_dot_width(),
+            window_dot_height: default_workspace_window_dot_height(),
+            window_dot_gap: default_workspace_window_dot_gap(),
+            window_group_bar_width: default_workspace_window_group_bar_width(),
+            window_group_bar_height: default_workspace_window_group_bar_height(),
+            window_dot_bottom: default_workspace_window_dot_bottom(),
             text: default_workspace_text(),
             empty_background: default_workspace_empty(),
             occupied_background: default_workspace_occupied(),
@@ -139,6 +163,26 @@ impl WorkspacesConfig {
         anyhow::ensure!(
             self.font_size > 0.0,
             "workspace font_size must be greater than zero"
+        );
+        anyhow::ensure!(
+            self.label_padding_x >= 0 && self.label_padding_y >= 0,
+            "workspace label padding must not be negative"
+        );
+        anyhow::ensure!(
+            self.window_dot_width > 0 && self.window_dot_height > 0,
+            "workspace window dot dimensions must be positive"
+        );
+        anyhow::ensure!(
+            self.window_dot_gap >= 0,
+            "workspace window_dot_gap must not be negative"
+        );
+        anyhow::ensure!(
+            self.window_group_bar_width > 0 && self.window_group_bar_height > 0,
+            "workspace window group bar dimensions must be positive"
+        );
+        anyhow::ensure!(
+            self.window_dot_bottom >= 0,
+            "workspace window_dot_bottom must not be negative"
         );
         let _ = self.text_rgba()?;
         let _ = self.empty_rgba()?;
@@ -355,6 +399,38 @@ fn default_workspace_width() -> i32 {
 
 fn default_workspace_margin_right() -> i32 {
     8
+}
+
+fn default_workspace_label_padding_x() -> i32 {
+    3
+}
+
+fn default_workspace_label_padding_y() -> i32 {
+    1
+}
+
+fn default_workspace_window_dot_width() -> i32 {
+    2
+}
+
+fn default_workspace_window_dot_height() -> i32 {
+    2
+}
+
+fn default_workspace_window_dot_gap() -> i32 {
+    1
+}
+
+fn default_workspace_window_group_bar_width() -> i32 {
+    2
+}
+
+fn default_workspace_window_group_bar_height() -> i32 {
+    7
+}
+
+fn default_workspace_window_dot_bottom() -> i32 {
+    2
 }
 
 fn default_workspace_text() -> String {

@@ -479,7 +479,8 @@ pub fn read_event_batch(stream: &UnixStream, buffer: &mut String) -> Result<Even
         match event {
             "workspace" | "workspacev2" | "focusedmon" | "focusedmonv2" | "createworkspace"
             | "createworkspacev2" | "destroyworkspace" | "destroyworkspacev2" | "moveworkspace"
-            | "moveworkspacev2" | "monitoradded" | "monitoraddedv2" | "monitorremoved"
+            | "moveworkspacev2" | "openwindow" | "closewindow" | "movewindow"
+            | "movewindowv2" | "monitoradded" | "monitoraddedv2" | "monitorremoved"
             | "monitorremovedv2" | "configreloaded" => batch.state_changed = true,
             "activewindow" | "activewindowv2" | "windowtitle" | "windowtitlev2" => {
                 batch.active_window_changed = true

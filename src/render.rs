@@ -129,6 +129,15 @@ impl Renderer {
                 style,
                 text_color,
             );
+            self.draw_workspace_window_dots(
+                canvas,
+                width,
+                height,
+                rect,
+                snapshot.workspace_windows(global),
+                style,
+                text_rgba,
+            );
         }
 
         Ok(style.strip_width())
@@ -2286,15 +2295,17 @@ impl Renderer {
         style: &WorkspacesConfig,
         color: Color,
     ) {
-        let estimated = (text.chars().count() as f32 * style.font_size * 0.62).ceil() as i32;
-        let text_x = rect
-            .x
-            .saturating_add((rect.w.saturating_sub(estimated)).max(0) / 2);
-        let text_w = rect.w.max(1) as f32;
-        let line_height = (height as f32).max(style.font_size);
+        let text_x = rect.x.saturating_add(style.label_padding_x);
+        let text_y = rect.y.saturating_add(style.label_padding_y);
+        let text_w = rect
+            .w
+            .saturating_sub(style.label_padding_x.saturating_mul(2))
+            .max(1) as f32;
+        let line_height = (style.font_size * 1.15).ceil().max(style.font_size);
+        let text_h = line_height.ceil().max(1.0);
 
         let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(style.font_size, line_height));
-        buffer.set_size(Some(text_w), Some(height as f32));
+        buffer.set_size(Some(text_w), Some(text_h));
         let family = match style.font_family.as_str() {
             "sans-serif" => Family::SansSerif,
             "serif" => Family::Serif,
@@ -2315,7 +2326,7 @@ impl Renderer {
                     width,
                     height,
                     text_x.saturating_add(x),
-                    rect.y.saturating_add(y),
+                    text_y.saturating_add(y),
                     w,
                     h,
                     pixel,
@@ -2993,6 +3004,74 @@ impl Renderer {
         let padding_x = view.style.padding_x.max(0);
         let padding_y = view.style.padding_y.max(0);
         let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+    #[allow(clippy::too_many_arguments)]
+    fn draw_workspace_window_dots(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        windows: u32,
+        style: &WorkspacesConfig,
+        color: [u8; 4],
+    ) {
+        if windows == 0 {
+            return;
+        }
+
+        let dot_w = style.window_dot_width.max(1);
+        let dot_h = style.window_dot_height.max(1);
+        let bar_w = style.window_group_bar_width.max(1);
+        let bar_h = style.window_group_bar_height.max(1);
+        let gap = style.window_dot_gap.max(0);
+        let mut x = rect.x.saturating_add(style.label_padding_x);
+        let bottom = rect
+            .y
+            .saturating_add(rect.h)
+            .saturating_sub(style.window_dot_bottom);
+
+        let bars = windows / 5;
+        let dots = windows % 5;
+
+        for index in 0..bars {
+            if index > 0 {
+                x = x.saturating_add(gap);
+            }
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x,
+                    y: bottom.saturating_sub(bar_h),
+                    w: bar_w,
+                    h: bar_h,
+                },
+                color,
+            );
+            x = x.saturating_add(bar_w);
+        }
+
+        for index in 0..dots {
+            if bars > 0 || index > 0 {
+                x = x.saturating_add(gap);
+            }
+            fill_rect(
+                canvas,
+                width,
+                height,
+                Rect {
+                    x,
+                    y: bottom.saturating_sub(dot_h),
+                    w: dot_w,
+                    h: dot_h,
+                },
+                color,
+            );
+            x = x.saturating_add(dot_w);
+        }
+    }
+
         let icon_size = disk_icon_slot_size(disk, view.style, rect.h);
         let icon_x = rect.x.saturating_add(padding_x);
         let icon_y = rect
