@@ -1,6 +1,7 @@
 label = "Menu"
 command = "mhyprmenu"
 args = []
+icon_scale = 0.82
 
 [style]
 foreground = "#F2F2F2"

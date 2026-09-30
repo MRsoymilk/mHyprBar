@@ -3575,6 +3575,10 @@ impl Renderer {
                 ModuleVisual::Memory(memory) => {
                     self.draw_memory(canvas, width, height, rect, &view, memory)?;
                 }
+                #[cfg(mhypr_module = "menu")]
+                ModuleVisual::Menu(menu) => {
+                    self.draw_menu(canvas, width, height, rect, &view, menu);
+                }
                 #[cfg(mhypr_module = "network")]
                 ModuleVisual::Network(network) => {
                     self.draw_network(canvas, width, height, rect, &view, network)?;
@@ -3810,6 +3814,43 @@ impl Renderer {
             padding_y,
         )?;
         Ok(())
+    }
+
+    #[cfg(mhypr_module = "menu")]
+    fn draw_menu(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        menu: &crate::modules::menu::MenuVisual,
+    ) {
+        let padding_x = view.style.padding_x.max(0);
+        let padding_y = view.style.padding_y.max(0);
+        let content_w = rect.w.saturating_sub(padding_x.saturating_mul(2)).max(1);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+        let icon_size = ((content_h as f32 * menu.icon_scale).round() as i32)
+            .clamp(1, content_h.min(content_w));
+        let icon_x = rect
+            .x
+            .saturating_add(padding_x)
+            .saturating_add((content_w - icon_size) / 2);
+        let icon_y = rect
+            .y
+            .saturating_add(padding_y)
+            .saturating_add((content_h - icon_size) / 2);
+        draw_rgba_pixmap(
+            canvas,
+            width,
+            height,
+            icon_x,
+            icon_y,
+            icon_size,
+            menu.icon_width,
+            menu.icon_height,
+            &menu.icon_pixels,
+        );
     }
 
     #[cfg(mhypr_module = "layout")]
@@ -5140,6 +5181,20 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
             .max(1);
     }
 
+    #[cfg(mhypr_module = "menu")]
+    if let ModuleVisual::Menu(menu) = &view.visual {
+        let style = view.style;
+        let content_h = bar_height
+            .saturating_sub(style.padding_y.max(0).saturating_mul(2))
+            .max(1);
+        let icon_size = ((content_h as f32 * menu.icon_scale).round() as i32)
+            .clamp(1, content_h);
+        return style
+            .min_width
+            .max(icon_size.saturating_add(style.padding_x.max(0).saturating_mul(2)))
+            .max(1);
+    }
+
     #[cfg(mhypr_module = "network")]
     if let ModuleVisual::Network(_) = &view.visual {
         let style = view.style;
@@ -5298,6 +5353,73 @@ fn lerp_rgba(from: [u8; 4], to: [u8; 4], t: f32) -> [u8; 4] {
         mix(from[2], to[2]),
         mix(from[3], to[3]),
     ]
+}
+
+#[cfg(mhypr_module = "menu")]
+#[allow(clippy::too_many_arguments)]
+fn draw_rgba_pixmap(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    target_size: i32,
+    source_width: i32,
+    source_height: i32,
+    pixels: &[u8],
+) {
+    if target_size <= 0 || source_width <= 0 || source_height <= 0 {
+        return;
+    }
+
+    let sw = source_width as usize;
+    let sh = source_height as usize;
+    if pixels.len() < sw.saturating_mul(sh).saturating_mul(4) {
+        return;
+    }
+
+    let (draw_w, draw_h) = if source_width >= source_height {
+        (
+            target_size,
+            ((source_height as i64 * target_size as i64) / source_width as i64)
+                .max(1)
+                .min(target_size as i64) as i32,
+        )
+    } else {
+        (
+            ((source_width as i64 * target_size as i64) / source_height as i64)
+                .max(1)
+                .min(target_size as i64) as i32,
+            target_size,
+        )
+    };
+    let x0 = x.saturating_add((target_size - draw_w) / 2);
+    let y0 = y.saturating_add((target_size - draw_h) / 2);
+
+    for dy in 0..draw_h {
+        let sy = (dy as i64 * source_height as i64 / draw_h as i64) as usize;
+        for dx in 0..draw_w {
+            let sx = (dx as i64 * source_width as i64 / draw_w as i64) as usize;
+            let offset = (sy * sw + sx) * 4;
+            let rgba = [
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            ];
+            if rgba[3] == 0 {
+                continue;
+            }
+            blend_pixel_rgba(
+                canvas,
+                width,
+                height,
+                x0.saturating_add(dx),
+                y0.saturating_add(dy),
+                rgba,
+            );
+        }
+    }
 }
 
 #[cfg(any(

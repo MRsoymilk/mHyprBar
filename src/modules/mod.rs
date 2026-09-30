@@ -65,6 +65,8 @@ pub enum ModuleVisual {
     Monitor(monitor::MonitorVisual),
     #[cfg(mhypr_module = "memory")]
     Memory(memory::MemoryVisual),
+    #[cfg(mhypr_module = "menu")]
+    Menu(menu::MenuVisual),
     #[cfg(mhypr_module = "network")]
     Network(network::NetworkVisual),
 }
