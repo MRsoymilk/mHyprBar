@@ -1,29 +1,8 @@
-#[cfg(mhypr_module = "battery")]
-mod battery_popup;
-#[cfg(mhypr_module = "clock")]
-mod clock_popup;
 mod config;
-#[cfg(mhypr_module = "cpu")]
-mod cpu_popup;
-#[cfg(mhypr_module = "disk")]
-mod disk_popup;
-#[cfg(mhypr_module = "gpu")]
-mod gpu;
-#[cfg(mhypr_module = "gpu")]
-mod gpu_popup;
 mod hyprland;
 mod ipc;
-#[cfg(mhypr_module = "memory")]
-mod memory_popup;
 mod modules;
-#[cfg(mhypr_module = "monitor")]
-mod monitor_popup;
-#[cfg(mhypr_module = "network")]
-mod network_popup;
 mod render;
-mod tray;
-#[cfg(mhypr_module = "tray")]
-mod tray_popup;
 mod wayland;
 
 use std::{collections::HashSet, env};

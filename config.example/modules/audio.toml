@@ -5,10 +5,7 @@ step_percent = 5
 max_percent = 150
 # Visible SVG content scale relative to the bar's available height.
 icon_scale = 1.0
-bar_width = 32
-bar_height = 4
 text_gap = 4
-bar_background = "#303030"
 fill = "#8AB4FF"
 muted_fill = "#FF5C6C"
 
@@ -18,5 +15,31 @@ background = "transparent"
 font_family = "sans-serif"
 font_size = 10.0
 padding_x = 5
+padding_y = 0
+min_width = 0
+
+[popup]
+enabled = true
+width = 560
+padding = 10
+title_height = 30
+row_height = 54
+mute_width = 48
+slider_width = 160
+slider_height = 5
+refresh_interval_ms = 1000
+border = "#3C414A"
+separator = "#353A42"
+active_background = "#26384A"
+muted = "#FF5C6C"
+bar_background = "#30343A"
+bar_fill = "#8AB4FF"
+
+[popup.style]
+foreground = "#F2F2F2"
+background = "#17191DEB"
+font_family = "sans-serif"
+font_size = 12.0
+padding_x = 0
 padding_y = 0
 min_width = 0

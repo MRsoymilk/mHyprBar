@@ -64,16 +64,59 @@ struct WorkspaceRefJson {
 #[derive(Clone, Debug, Deserialize, Default)]
 struct ActiveWindowJson {
     #[serde(default)]
+    address: String,
+    #[serde(default)]
     class: String,
+    #[serde(rename = "initialClass", default)]
+    initial_class: String,
     #[serde(default)]
     title: String,
 }
 
 #[cfg(mhypr_module = "active_window")]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ActiveWindow {
+    pub address: String,
     pub class: String,
+    pub initial_class: String,
     pub title: String,
+}
+
+#[cfg(mhypr_module = "active_window")]
+#[derive(Clone, Debug, Deserialize, Default)]
+struct WindowWorkspaceJson {
+    #[serde(default)]
+    id: i32,
+}
+
+#[cfg(mhypr_module = "active_window")]
+#[derive(Clone, Debug, Deserialize)]
+struct WindowClientJson {
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    class: String,
+    #[serde(rename = "initialClass", default)]
+    initial_class: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    monitor: i32,
+    #[serde(default)]
+    workspace: WindowWorkspaceJson,
+    #[serde(default = "default_true")]
+    mapped: bool,
+}
+
+#[cfg(mhypr_module = "active_window")]
+#[derive(Clone, Debug)]
+pub struct WindowClient {
+    pub address: String,
+    pub class: String,
+    pub initial_class: String,
+    pub title: String,
+    pub monitor_id: i32,
+    pub workspace_id: i32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -234,9 +277,58 @@ pub fn active_window() -> Result<ActiveWindow> {
     let window: ActiveWindowJson =
         serde_json::from_str(raw.trim()).context("invalid Hyprland activewindow JSON")?;
     Ok(ActiveWindow {
+        address: window.address,
         class: window.class,
+        initial_class: window.initial_class,
         title: window.title,
     })
+}
+
+#[cfg(mhypr_module = "active_window")]
+pub fn window_clients() -> Result<Vec<WindowClient>> {
+    let raw = request("j/clients")?;
+    let clients: Vec<WindowClientJson> =
+        serde_json::from_str(raw.trim()).context("invalid Hyprland clients JSON")?;
+    Ok(clients
+        .into_iter()
+        .filter(|client| client.mapped && !client.address.trim().is_empty())
+        .map(|client| WindowClient {
+            address: client.address,
+            class: client.class,
+            initial_class: client.initial_class,
+            title: client.title,
+            monitor_id: client.monitor,
+            workspace_id: client.workspace.id,
+        })
+        .collect())
+}
+
+#[cfg(mhypr_module = "active_window")]
+pub fn focus_window(address: &str) -> Result<()> {
+    let address = address.trim();
+    let raw = address.strip_prefix("0x").unwrap_or(address);
+    if raw.is_empty() || !raw.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("invalid Hyprland window address");
+    }
+
+    let address = format!("0x{raw}");
+    let selector = format!("address:{address}");
+    let selector_lua = lua_quote(&selector);
+    match request(&format!(
+        "eval hl.dispatch(hl.dsp.focus({{ window = {selector_lua} }}))"
+    )) {
+        Ok(response) if command_succeeded(&response) => Ok(()),
+        _ => {
+            let response = request(&format!("dispatch focuswindow {selector}"))?;
+            if !command_succeeded(&response) {
+                bail!(
+                    "Hyprland rejected window focus request: {}",
+                    response.trim()
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(mhypr_module = "layout")]
@@ -267,9 +359,11 @@ pub fn active_layout() -> Result<String> {
 #[cfg(mhypr_module = "layout")]
 pub fn set_active_layout(layout: &str) -> Result<()> {
     ensure_layout_name(layout)?;
+    let floating = layout.eq_ignore_ascii_case("floating");
     let layout = lua_quote(layout);
+    let floating_lua = if floating { "true" } else { "false" };
     let lua = format!(
-        "local w=hl.get_active_workspace(); if w then if w.special then hl.workspace_rule({{ workspace=tostring(w.name), layout={layout} }}) else hl.workspace_rule({{ workspace=\"name:\" .. tostring(w.name), layout={layout} }}) end end"
+        "local w=hl.get_active_special_workspace(); if w==nil then w=hl.get_active_workspace() end; if w then _G.mhyprbar_layout_modes=_G.mhyprbar_layout_modes or {{}}; if not _G.mhyprbar_layout_hook then hl.on('window.open', function(win) local aw=hl.get_active_special_workspace(); if aw==nil then aw=hl.get_active_workspace() end; if aw then local key=tostring(aw.id or aw.name); local mode=_G.mhyprbar_layout_modes and _G.mhyprbar_layout_modes[key]; if mode=='floating' then hl.dispatch(hl.dsp.window.float({{ window=win, action='set' }})) elseif mode=='tiled' then hl.dispatch(hl.dsp.window.float({{ window=win, action='unset' }})) end end end); _G.mhyprbar_layout_hook=true end; local key=tostring(w.id or w.name); local function set_float(enabled) if type(mhypr_set_workspace_floating)=='function' then mhypr_set_workspace_floating(w, enabled) else local windows=hl.get_windows({{ workspace=w }}); for _,win in pairs(windows) do hl.dispatch(hl.dsp.window.float({{ window=win, action=enabled and 'set' or 'unset' }})) end end end; set_float({floating_lua}); _G.mhyprbar_layout_modes[key]={floating_lua} and 'floating' or 'tiled'; if not {floating_lua} then if w.special then hl.workspace_rule({{ workspace=tostring(w.name), layout={layout} }}) else hl.workspace_rule({{ workspace=\"name:\" .. tostring(w.name), layout={layout} }}) end end end"
     );
     let response = request(&format!("eval {lua}"))?;
     if !command_succeeded(&response) {
@@ -385,7 +479,8 @@ pub fn read_event_batch(stream: &UnixStream, buffer: &mut String) -> Result<Even
         match event {
             "workspace" | "workspacev2" | "focusedmon" | "focusedmonv2" | "createworkspace"
             | "createworkspacev2" | "destroyworkspace" | "destroyworkspacev2" | "moveworkspace"
-            | "moveworkspacev2" | "monitoradded" | "monitoraddedv2" | "monitorremoved"
+            | "moveworkspacev2" | "openwindow" | "closewindow" | "movewindow"
+            | "movewindowv2" | "monitoradded" | "monitoraddedv2" | "monitorremoved"
             | "monitorremovedv2" | "configreloaded" => batch.state_changed = true,
             "activewindow" | "activewindowv2" | "windowtitle" | "windowtitlev2" => {
                 batch.active_window_changed = true

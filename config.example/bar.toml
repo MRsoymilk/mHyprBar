@@ -23,6 +23,16 @@ gap = 0
 margin_right = 8
 font_family = "sans-serif"
 font_size = 13.0
+# Workspace number sits in the top-left corner.
+label_padding_x = 3
+label_padding_y = 1
+# Single-line window count: one dot = 1 window, one vertical bar = 5 windows.
+window_dot_width = 2
+window_dot_height = 2
+window_dot_gap = 1
+window_group_bar_width = 2
+window_group_bar_height = 7
+window_dot_bottom = 2
 text = "#F2F2F2"
 empty_background = "transparent"
 occupied_background = "#383838"
