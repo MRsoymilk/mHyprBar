@@ -64,16 +64,59 @@ struct WorkspaceRefJson {
 #[derive(Clone, Debug, Deserialize, Default)]
 struct ActiveWindowJson {
     #[serde(default)]
+    address: String,
+    #[serde(default)]
     class: String,
+    #[serde(rename = "initialClass", default)]
+    initial_class: String,
     #[serde(default)]
     title: String,
 }
 
 #[cfg(mhypr_module = "active_window")]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ActiveWindow {
+    pub address: String,
     pub class: String,
+    pub initial_class: String,
     pub title: String,
+}
+
+#[cfg(mhypr_module = "active_window")]
+#[derive(Clone, Debug, Deserialize, Default)]
+struct WindowWorkspaceJson {
+    #[serde(default)]
+    id: i32,
+}
+
+#[cfg(mhypr_module = "active_window")]
+#[derive(Clone, Debug, Deserialize)]
+struct WindowClientJson {
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    class: String,
+    #[serde(rename = "initialClass", default)]
+    initial_class: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    monitor: i32,
+    #[serde(default)]
+    workspace: WindowWorkspaceJson,
+    #[serde(default = "default_true")]
+    mapped: bool,
+}
+
+#[cfg(mhypr_module = "active_window")]
+#[derive(Clone, Debug)]
+pub struct WindowClient {
+    pub address: String,
+    pub class: String,
+    pub initial_class: String,
+    pub title: String,
+    pub monitor_id: i32,
+    pub workspace_id: i32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -234,9 +277,58 @@ pub fn active_window() -> Result<ActiveWindow> {
     let window: ActiveWindowJson =
         serde_json::from_str(raw.trim()).context("invalid Hyprland activewindow JSON")?;
     Ok(ActiveWindow {
+        address: window.address,
         class: window.class,
+        initial_class: window.initial_class,
         title: window.title,
     })
+}
+
+#[cfg(mhypr_module = "active_window")]
+pub fn window_clients() -> Result<Vec<WindowClient>> {
+    let raw = request("j/clients")?;
+    let clients: Vec<WindowClientJson> =
+        serde_json::from_str(raw.trim()).context("invalid Hyprland clients JSON")?;
+    Ok(clients
+        .into_iter()
+        .filter(|client| client.mapped && !client.address.trim().is_empty())
+        .map(|client| WindowClient {
+            address: client.address,
+            class: client.class,
+            initial_class: client.initial_class,
+            title: client.title,
+            monitor_id: client.monitor,
+            workspace_id: client.workspace.id,
+        })
+        .collect())
+}
+
+#[cfg(mhypr_module = "active_window")]
+pub fn focus_window(address: &str) -> Result<()> {
+    let address = address.trim();
+    let raw = address.strip_prefix("0x").unwrap_or(address);
+    if raw.is_empty() || !raw.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("invalid Hyprland window address");
+    }
+
+    let address = format!("0x{raw}");
+    let selector = format!("address:{address}");
+    let selector_lua = lua_quote(&selector);
+    match request(&format!(
+        "eval hl.dispatch(hl.dsp.focus({{ window = {selector_lua} }}))"
+    )) {
+        Ok(response) if command_succeeded(&response) => Ok(()),
+        _ => {
+            let response = request(&format!("dispatch focuswindow {selector}"))?;
+            if !command_succeeded(&response) {
+                bail!(
+                    "Hyprland rejected window focus request: {}",
+                    response.trim()
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(mhypr_module = "layout")]

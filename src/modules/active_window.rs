@@ -3,10 +3,11 @@ use std::time::Duration;
 use anyhow::{Result, ensure};
 use serde::Deserialize;
 
-use super::StatusModule;
+use super::{ModuleVisual, StatusModule};
 use crate::{
     config::{self, ModuleStyle},
     hyprland,
+    window_icon::{WindowIcon, resolve_window_icon},
 };
 
 pub const NAME: &str = "active_window";
@@ -22,12 +23,26 @@ struct ActiveWindowConfig {
     separator: String,
     #[serde(default)]
     empty_text: String,
+    #[serde(default = "default_icon_size")]
+    icon_size: i32,
+    #[serde(default = "default_icon_gap")]
+    icon_gap: i32,
     #[serde(default)]
     style: ModuleStyle,
 }
 
+#[derive(Clone, Debug)]
+pub struct ActiveWindowVisual {
+    pub icon: Option<WindowIcon>,
+    pub icon_size: i32,
+    pub icon_gap: i32,
+}
+
 pub struct ActiveWindowModule {
     config: ActiveWindowConfig,
+    visual: ActiveWindowVisual,
+    icon_key: String,
+    revision: u64,
 }
 
 impl ActiveWindowModule {
@@ -37,8 +52,26 @@ impl ActiveWindowModule {
             config.max_chars > 0,
             "active_window max_chars must be greater than zero"
         );
+        ensure!(
+            config.icon_size > 0,
+            "active_window icon_size must be greater than zero"
+        );
+        ensure!(
+            config.icon_gap >= 0,
+            "active_window icon_gap must not be negative"
+        );
         config.style.validate()?;
-        Ok(Self { config })
+        let visual = ActiveWindowVisual {
+            icon: None,
+            icon_size: config.icon_size,
+            icon_gap: config.icon_gap,
+        };
+        Ok(Self {
+            config,
+            visual,
+            icon_key: String::new(),
+            revision: 0,
+        })
     }
 
     fn format_text(&self, class: &str, title: &str) -> String {
@@ -70,7 +103,36 @@ impl StatusModule for ActiveWindowModule {
 
     fn sample(&mut self) -> Result<String> {
         let active = hyprland::active_window()?;
-        Ok(self.format_text(&active.class, &active.title))
+        let icon_key = format!(
+            "{}\u{1f}{}",
+            active.class.to_ascii_lowercase(),
+            active.initial_class.to_ascii_lowercase()
+        );
+        if icon_key != self.icon_key {
+            self.visual.icon =
+                if active.class.trim().is_empty() && active.initial_class.trim().is_empty() {
+                    None
+                } else {
+                    resolve_window_icon(&active.class, &active.initial_class, self.config.icon_size)
+                };
+            self.icon_key = icon_key;
+            self.revision = self.revision.wrapping_add(1);
+        }
+
+        let class = if active.class.trim().is_empty() {
+            &active.initial_class
+        } else {
+            &active.class
+        };
+        Ok(self.format_text(class, &active.title))
+    }
+
+    fn visual(&self) -> ModuleVisual {
+        ModuleVisual::ActiveWindow(self.visual.clone())
+    }
+
+    fn visual_revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -92,6 +154,14 @@ fn default_max_chars() -> usize {
 
 fn default_separator() -> String {
     " · ".into()
+}
+
+fn default_icon_size() -> i32 {
+    18
+}
+
+fn default_icon_gap() -> i32 {
+    6
 }
 
 #[cfg(test)]

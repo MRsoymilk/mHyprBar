@@ -3153,6 +3153,10 @@ impl Renderer {
             icon_y,
             icon_w,
             gpu.icon_width,
+                #[cfg(mhypr_module = "active_window")]
+                ModuleVisual::ActiveWindow(active_window) => {
+                    self.draw_active_window(canvas, width, height, rect, &view, active_window)?;
+                }
             gpu.icon_height,
             &gpu.icon_pixels,
             icon_color,
@@ -3212,6 +3216,68 @@ impl Renderer {
                     w: percent_w,
                     h: row_h,
                 },
+    #[cfg(mhypr_module = "active_window")]
+    fn draw_active_window(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        view: &ModuleView<'_>,
+        active_window: &crate::modules::active_window::ActiveWindowVisual,
+    ) -> Result<()> {
+        let padding_x = view.style.padding_x.max(0);
+        let padding_y = view.style.padding_y.max(0);
+        let content_h = rect.h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+        let mut text_x = rect.x.saturating_add(padding_x);
+
+        if let Some(icon) = active_window.icon.as_ref() {
+            let icon_size = active_window.icon_size.min(content_h).max(1);
+            let icon_y = rect
+                .y
+                .saturating_add(padding_y)
+                .saturating_add((content_h - icon_size) / 2);
+            draw_native_argb_pixmap(
+                canvas,
+                width,
+                height,
+                text_x,
+                icon_y,
+                icon_size,
+                icon.width,
+                icon.height,
+                &icon.pixels,
+            );
+            text_x = text_x.saturating_add(icon_size);
+            if !view.text.is_empty() {
+                text_x = text_x.saturating_add(active_window.icon_gap);
+            }
+        }
+
+        if view.text.is_empty() {
+            return Ok(());
+        }
+        let right = rect
+            .x
+            .saturating_add(rect.w)
+            .saturating_sub(padding_x);
+        self.draw_text_content(
+            canvas,
+            width,
+            height,
+            Rect {
+                x: text_x,
+                y: rect.y,
+                w: right.saturating_sub(text_x).max(1),
+                h: rect.h,
+            },
+            view.text,
+            view.style,
+            0,
+            padding_y,
+        )
+    }
+
                 &text,
                 style,
                 0,
@@ -4449,3 +4515,31 @@ fn blend_at(dst: &mut [u8], rgba: [u8; 4]) {
     dst[2] = ((rgba[0] as u16 * alpha + dst_r * inv) / 255) as u8;
     dst[3] = (alpha + dst_a * inv / 255).min(255) as u8;
 }
+    #[cfg(mhypr_module = "active_window")]
+    if let ModuleVisual::ActiveWindow(active_window) = &view.visual {
+        let style = view.style;
+        let text_width = if view.text.is_empty() {
+            0
+        } else {
+            estimate_text_width(view.text, style)
+        };
+        let icon_width = active_window
+            .icon
+            .as_ref()
+            .map(|_| active_window.icon_size.max(1))
+            .unwrap_or(0);
+        if icon_width == 0 && text_width == 0 {
+            return 0;
+        }
+        let gap = if icon_width > 0 && text_width > 0 {
+            active_window.icon_gap
+        } else {
+            0
+        };
+        let content = icon_width.saturating_add(gap).saturating_add(text_width);
+        return style
+            .min_width
+            .max(content.saturating_add(style.padding_x.saturating_mul(2)))
+            .max(1);
+    }
+

@@ -43,6 +43,8 @@ pub struct CompiledModule {
 
 pub enum ModuleVisual {
     Text,
+    #[cfg(mhypr_module = "active_window")]
+    ActiveWindow(active_window::ActiveWindowVisual),
     #[cfg(mhypr_module = "audio")]
     Audio(audio::AudioVisual),
     #[cfg(mhypr_module = "battery")]
