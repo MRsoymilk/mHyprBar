@@ -5141,12 +5141,15 @@ fn module_width(view: &ModuleView<'_>, bar_height: i32) -> i32 {
     }
 
     #[cfg(mhypr_module = "network")]
-    if let ModuleVisual::Network(network) = &view.visual {
+    if let ModuleVisual::Network(_) = &view.visual {
         let style = view.style;
         let mut row_style = style.clone();
         row_style.font_size = (style.font_size - 1.0).max(8.0);
-        let content = estimate_text_width(&network.download_text, &row_style)
-            .max(estimate_text_width(&network.upload_text, &row_style));
+        // Reserve enough space for the widest rate representation up front.
+        // Runtime B/s, K/s, M/s and G/s changes must not resize the whole
+        // right-side module group and make neighboring modules jump.
+        let content = estimate_text_width("↓ 999.9G/s", &row_style)
+            .max(estimate_text_width("↑ 999.9G/s", &row_style));
         return style
             .min_width
             .max(content.saturating_add(style.padding_x.saturating_mul(2)))
