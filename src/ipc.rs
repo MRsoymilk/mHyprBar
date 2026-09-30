@@ -11,12 +11,14 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Reload,
     Status,
     Quit,
     CpuPopupToggle,
+    PopupToggle { name: String },
+    PopupInfo { name: String },
     TrayList,
     TrayMenuOpen { index: usize },
     TrayTooltipOpen { index: usize },
@@ -29,6 +31,8 @@ impl Request {
             Self::Status => "status\n".into(),
             Self::Quit => "quit\n".into(),
             Self::CpuPopupToggle => "cpu-popup-toggle\n".into(),
+            Self::PopupToggle { name } => format!("popup-toggle {name}\n"),
+            Self::PopupInfo { name } => format!("popup-info {name}\n"),
             Self::TrayList => "tray-list\n".into(),
             Self::TrayMenuOpen { index } => format!("tray-menu-open {index}\n"),
             Self::TrayTooltipOpen { index } => format!("tray-tooltip-open {index}\n"),
@@ -46,6 +50,20 @@ impl Request {
             _ => {
                 let mut fields = text.split_whitespace();
                 match fields.next()? {
+                    "popup-toggle" => {
+                        let name = fields.next()?.to_owned();
+                        if fields.next().is_some() {
+                            return None;
+                        }
+                        Some(Self::PopupToggle { name })
+                    }
+                    "popup-info" => {
+                        let name = fields.next()?.to_owned();
+                        if fields.next().is_some() {
+                            return None;
+                        }
+                        Some(Self::PopupInfo { name })
+                    }
                     "tray-menu-open" => {
                         let index = fields.next()?.parse().ok()?;
                         if fields.next().is_some() {
@@ -148,6 +166,14 @@ mod tests {
         assert_eq!(
             Request::parse(b"cpu-popup-toggle"),
             Some(Request::CpuPopupToggle)
+        );
+        assert_eq!(
+            Request::parse(b"popup-toggle memory"),
+            Some(Request::PopupToggle { name: "memory".into() })
+        );
+        assert_eq!(
+            Request::parse(b"popup-info cpu"),
+            Some(Request::PopupInfo { name: "cpu".into() })
         );
         assert_eq!(Request::parse(b"tray-list"), Some(Request::TrayList));
         assert_eq!(

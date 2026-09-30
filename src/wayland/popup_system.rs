@@ -445,6 +445,7 @@ impl App {
             bar_index,
             item_index: None,
             cpu_pid: Some(pid),
+            debug_origin: Some((left, top)),
             cpu_process: Some(process),
             cpu_accent: Some(accent),
         });

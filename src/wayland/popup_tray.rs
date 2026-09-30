@@ -207,6 +207,7 @@ impl App {
             bar_index,
             item_index: None,
             cpu_pid: None,
+            debug_origin: None,
             #[cfg(mhypr_module = "cpu")]
             cpu_process: None,
             #[cfg(mhypr_module = "cpu")]
@@ -295,6 +296,7 @@ impl App {
             bar_index,
             item_index: Some(item_index),
             cpu_pid: None,
+            debug_origin: None,
             #[cfg(mhypr_module = "cpu")]
             cpu_process: None,
             #[cfg(mhypr_module = "cpu")]

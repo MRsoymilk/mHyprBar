@@ -378,6 +378,275 @@ impl App {
         )
     }
 
+    pub(super) fn toggle_popup_first(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        name: &str,
+    ) -> Result<String> {
+        #[cfg(mhypr_module = "monitor")]
+        let bar_index = hyprland::monitor_infos()?
+            .into_iter()
+            .find(|monitor| monitor.focused)
+            .and_then(|monitor| {
+                self.bars
+                    .iter()
+                    .position(|bar| bar.output_name.as_deref() == Some(monitor.name.as_str()))
+            })
+            .unwrap_or(0);
+        #[cfg(not(mhypr_module = "monitor"))]
+        let bar_index = 0usize;
+        let bar = self
+            .bars
+            .get(bar_index)
+            .context("no bar output is available")?;
+        let bar_width = bar.width;
+        let bar_height = bar.height;
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+
+        let mut start = None;
+        let mut end = None;
+        for x in 0..bar_width as i32 {
+            let is_target = render::module_at_x(
+                x as f64,
+                bar_width,
+                workspace_visible,
+                &self.config,
+                &self.modules,
+            )
+            .is_some_and(|hit| hit.name == name);
+            if is_target {
+                start.get_or_insert(x);
+                end = Some(x + 1);
+            } else if start.is_some() {
+                break;
+            }
+        }
+        let (start, end) = start
+            .zip(end)
+            .with_context(|| format!("module {name:?} is not visible on the first bar"))?;
+        let center = (start + end) as f64 / 2.0;
+
+        match name {
+            #[cfg(mhypr_module = "menu")]
+            "menu" => {
+                let origin_y = if self.config.position == "bottom" {
+                    bar_height as f64 / 2.0
+                } else {
+                    bar_height as f64 + 2.0
+                };
+                let _ = self.modules.activate_at(name, center, origin_y)?;
+            }
+            #[cfg(mhypr_module = "active_window")]
+            "active_window" => {
+                let _ = self.toggle_active_window_popup(qh, bar_index, center, false)?;
+            }
+            #[cfg(mhypr_module = "audio")]
+            "audio" => {
+                let _ = self.toggle_audio_popup(qh, bar_index, center)?;
+            }
+            #[cfg(mhypr_module = "brightness")]
+            "brightness" => {
+                let _ = self.toggle_brightness_popup(qh, bar_index, center)?;
+            }
+            #[cfg(mhypr_module = "battery")]
+            "battery" => {
+                let _ = self.toggle_battery_popup(qh, bar_index, center)?;
+            }
+            #[cfg(mhypr_module = "clock")]
+            "clock" => {
+                let _ = self.toggle_clock_popup(qh, bar_index, center)?;
+            }
+            #[cfg(mhypr_module = "cpu")]
+            "cpu" => {
+                let _ = self.toggle_cpu_popup(qh, bar_index, center)?;
+            }
+            #[cfg(mhypr_module = "gpu")]
+            "gpu" => {
+                let _ = self.toggle_gpu_popup(qh, bar_index, center)?;
+            }
+            #[cfg(mhypr_module = "monitor")]
+            "monitor" => {
+                let _ = self.toggle_monitor_popup(qh, bar_index, center)?;
+            }
+            #[cfg(mhypr_module = "network")]
+            "network" => {
+                let _ = self.toggle_network_popup(qh, bar_index, center)?;
+            }
+            #[cfg(mhypr_module = "disk")]
+            "disk" => {
+                let _ = self.toggle_disk_popup(qh, bar_index, center)?;
+            }
+            #[cfg(mhypr_module = "memory")]
+            "memory" => {
+                let _ = self.toggle_memory_popup(qh, bar_index, center)?;
+            }
+            #[cfg(mhypr_module = "layout")]
+            "layout" => {
+                let _ = self.toggle_layout_popup(qh, bar_index, center)?;
+            }
+            _ => anyhow::bail!("module {name:?} does not expose a debug popup"),
+        }
+
+        let monitor = self
+            .bars
+            .get(bar_index)
+            .and_then(|bar| bar.output_name.as_deref())
+            .unwrap_or("unknown");
+        if name == "menu" {
+            return Ok(format!("monitor={monitor} external=true"));
+        }
+        let Some((x, y, w, h)) = self.popup_debug_geometry(name) else {
+            return Ok(format!("monitor={monitor} closed=true"));
+        };
+        Ok(format!(
+            "monitor={monitor} x={x:.0} y={y:.0} w={w} h={h}"
+        ))
+    }
+
+    pub(super) fn popup_debug_info(&self, name: &str) -> Result<String> {
+        #[cfg(mhypr_module = "monitor")]
+        let monitor = hyprland::monitor_infos()?
+            .into_iter()
+            .find(|monitor| monitor.focused)
+            .map(|monitor| monitor.name)
+            .unwrap_or_else(|| "unknown".into());
+        #[cfg(not(mhypr_module = "monitor"))]
+        let monitor = "unknown".to_owned();
+
+        let (x, y, w, h) = self
+            .popup_debug_geometry(name)
+            .with_context(|| format!("popup {name:?} is not open"))?;
+        let mut info = format!("monitor={monitor} x={x:.0} y={y:.0} w={w} h={h}");
+        #[cfg(mhypr_module = "cpu")]
+        if name == "cpu"
+            && let Some(tooltip) = self
+                .tooltip
+                .as_ref()
+                .filter(|tooltip| tooltip.cpu_pid.is_some())
+            && let Some((tx, ty)) = tooltip.debug_origin
+        {
+            info.push_str(&format!(
+                " tooltip_x={tx} tooltip_y={ty} tooltip_w={} tooltip_h={}",
+                tooltip.width, tooltip.height
+            ));
+        }
+        Ok(info)
+    }
+
+    fn popup_debug_geometry(&self, name: &str) -> Option<(f64, f64, i32, i32)> {
+        match name {
+            #[cfg(mhypr_module = "active_window")]
+            "active_window" => self.active_window_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "audio")]
+            "audio" => self.audio_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "brightness")]
+            "brightness" => self.brightness_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "battery")]
+            "battery" => self.battery_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "clock")]
+            "clock" => self.clock_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "cpu")]
+            "cpu" => self.cpu_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "gpu")]
+            "gpu" => self.gpu_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "monitor")]
+            "monitor" => self.monitor_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "network")]
+            "network" => self.network_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "disk")]
+            "disk" => self.disk_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "memory")]
+            "memory" => self.memory_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            #[cfg(mhypr_module = "layout")]
+            "layout" => self.layout_popup.as_ref().map(|popup| {
+                (
+                    popup.panel_x,
+                    popup.panel_y,
+                    popup.model.config.width,
+                    popup.model.panel_height(),
+                )
+            }),
+            _ => None,
+        }
+    }
+
     pub(super) fn tray_action_at(
         &mut self,
         bar_index: usize,

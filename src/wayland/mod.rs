@@ -263,6 +263,18 @@ pub fn run(config: BarConfig) -> Result<()> {
                                         "error: cpu module is not compiled\n".to_owned()
                                     }
                                 }
+                                Ok(Some(Request::PopupToggle { name })) => {
+                                    match app.toggle_popup_first(&control_qh, &name) {
+                                        Ok(info) => format!("ok {info}\n"),
+                                        Err(error) => format!("error: {error:#}\n"),
+                                    }
+                                }
+                                Ok(Some(Request::PopupInfo { name })) => {
+                                    match app.popup_debug_info(&name) {
+                                        Ok(info) => format!("ok {info}\n"),
+                                        Err(error) => format!("error: {error:#}\n"),
+                                    }
+                                }
                                 Ok(Some(Request::TrayList)) => app.tray_list_text(),
                                 Ok(Some(Request::TrayMenuOpen { index })) => {
                                     match app.open_tray_popup_index(&control_qh, index) {
@@ -398,6 +410,7 @@ struct TooltipSurface {
     bar_index: usize,
     item_index: Option<usize>,
     cpu_pid: Option<u32>,
+    debug_origin: Option<(i32, i32)>,
     #[cfg(mhypr_module = "cpu")]
     cpu_process: Option<crate::modules::cpu::popup::CpuProcessRow>,
     #[cfg(mhypr_module = "cpu")]
