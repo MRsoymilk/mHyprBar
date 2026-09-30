@@ -377,12 +377,7 @@ fn crop_to_bounds(icon: &LayoutIcon, bounds: AlphaBounds) -> Result<LayoutIcon> 
 }
 
 fn default_layouts() -> Vec<String> {
-    vec![
-        "dwindle".into(),
-        "master".into(),
-        "scrolling".into(),
-        "monocle".into(),
-    ]
+    vec!["dwindle".into(), "floating".into()]
 }
 
 fn default_interval_ms() -> u64 {

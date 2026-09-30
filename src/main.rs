@@ -19,6 +19,8 @@ mod gpu;
 mod gpu_popup;
 mod hyprland;
 mod ipc;
+#[cfg(mhypr_module = "layout")]
+mod layout_popup;
 #[cfg(mhypr_module = "memory")]
 mod memory_popup;
 mod modules;

@@ -359,9 +359,11 @@ pub fn active_layout() -> Result<String> {
 #[cfg(mhypr_module = "layout")]
 pub fn set_active_layout(layout: &str) -> Result<()> {
     ensure_layout_name(layout)?;
+    let floating = layout.eq_ignore_ascii_case("floating");
     let layout = lua_quote(layout);
+    let floating_lua = if floating { "true" } else { "false" };
     let lua = format!(
-        "local w=hl.get_active_workspace(); if w then if w.special then hl.workspace_rule({{ workspace=tostring(w.name), layout={layout} }}) else hl.workspace_rule({{ workspace=\"name:\" .. tostring(w.name), layout={layout} }}) end end"
+        "local w=hl.get_active_special_workspace(); if w==nil then w=hl.get_active_workspace() end; if w then _G.mhyprbar_layout_modes=_G.mhyprbar_layout_modes or {{}}; if not _G.mhyprbar_layout_hook then hl.on('window.open', function(win) local aw=hl.get_active_special_workspace(); if aw==nil then aw=hl.get_active_workspace() end; if aw then local key=tostring(aw.id or aw.name); local mode=_G.mhyprbar_layout_modes and _G.mhyprbar_layout_modes[key]; if mode=='floating' then hl.dispatch(hl.dsp.window.float({{ window=win, action='set' }})) elseif mode=='tiled' then hl.dispatch(hl.dsp.window.float({{ window=win, action='unset' }})) end end end); _G.mhyprbar_layout_hook=true end; local key=tostring(w.id or w.name); local function set_float(enabled) if type(mhypr_set_workspace_floating)=='function' then mhypr_set_workspace_floating(w, enabled) else local windows=hl.get_windows({{ workspace=w }}); for _,win in pairs(windows) do hl.dispatch(hl.dsp.window.float({{ window=win, action=enabled and 'set' or 'unset' }})) end end end; set_float({floating_lua}); _G.mhyprbar_layout_modes[key]={floating_lua} and 'floating' or 'tiled'; if not {floating_lua} then if w.special then hl.workspace_rule({{ workspace=tostring(w.name), layout={layout} }}) else hl.workspace_rule({{ workspace=\"name:\" .. tostring(w.name), layout={layout} }}) end end end"
     );
     let response = request(&format!("eval {lua}"))?;
     if !command_succeeded(&response) {
