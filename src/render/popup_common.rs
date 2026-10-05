@@ -442,6 +442,46 @@ impl Renderer {
                 );
             }
 
+            if !item.inline_controls.is_empty() {
+                let count = item.inline_controls.len() as f64;
+                for (control_index, control) in item.inline_controls.iter().enumerate() {
+                    let left = rect.x + rect.w * control_index as f64 / count;
+                    let right = rect.x + rect.w * (control_index + 1) as f64 / count;
+                    let control_rect = TrayPopupRect {
+                        x: left,
+                        y: rect.y,
+                        w: right - left,
+                        h: rect.h,
+                    };
+                    if menu.hovered
+                        == Some(TrayPopupHit::Inline {
+                            root: index,
+                            control: control_index,
+                        })
+                    {
+                        fill_rect(canvas, width, height, popup_rect(control_rect), hover);
+                    }
+
+                    let mut color = foreground;
+                    if !control.enabled {
+                        color[3] = color[3].min(110);
+                    }
+                    let centered_padding = ((control_rect.w as i32 - 24) / 2).max(0);
+                    self.draw_popup_label(
+                        canvas,
+                        width,
+                        height,
+                        &control.label,
+                        control_rect,
+                        centered_padding,
+                        menu.style.style.font_size,
+                        Color::rgba(color[0], color[1], color[2], color[3]),
+                        &menu.style.style.font_family,
+                    );
+                }
+                continue;
+            }
+
             let mut color = foreground;
             if !item.enabled {
                 color[3] = color[3].min(110);

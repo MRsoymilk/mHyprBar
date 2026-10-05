@@ -3,10 +3,18 @@ use rustsni::MenuNode;
 use crate::modules::tray::MenuConfig;
 
 #[derive(Debug, Clone)]
+pub struct TrayPopupInlineControl {
+    pub label: String,
+    pub node_id: i32,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct TrayPopupItem {
     pub label: String,
     pub node_id: Option<i32>,
     pub children: Vec<TrayPopupItem>,
+    pub inline_controls: Vec<TrayPopupInlineControl>,
     pub separator_before: bool,
     pub enabled: bool,
 }
@@ -14,6 +22,7 @@ pub struct TrayPopupItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayPopupHit {
     Root(usize),
+    Inline { root: usize, control: usize },
     Child { root: usize, child: usize },
 }
 
@@ -151,7 +160,7 @@ impl TrayPopupModel {
                 Some(index)
             }
             Some(TrayPopupHit::Child { root, .. }) => Some(root),
-            _ => None,
+            Some(TrayPopupHit::Inline { .. }) | Some(TrayPopupHit::Root(_)) | None => None,
         };
         if self.open_root != next_open {
             self.open_root = next_open;
@@ -170,6 +179,14 @@ impl TrayPopupModel {
                     item.node_id
                         .map(TrayPopupClick::Activate)
                         .unwrap_or(TrayPopupClick::Keep)
+                }
+            }
+            Some(TrayPopupHit::Inline { root, control }) => {
+                let item = &self.items[root].inline_controls[control];
+                if item.enabled {
+                    TrayPopupClick::Activate(item.node_id)
+                } else {
+                    TrayPopupClick::Keep
                 }
             }
             Some(TrayPopupHit::Child { root, child }) => {
@@ -201,6 +218,16 @@ impl TrayPopupModel {
         if root.contains(x, y) {
             let index = ((y - root.y) / self.style.item_height as f64) as usize;
             if index < self.items.len() {
+                let item = &self.items[index];
+                if !item.inline_controls.is_empty() {
+                    let count = item.inline_controls.len();
+                    let relative_x = (x - root.x).clamp(0.0, root.w.max(1.0));
+                    let control = ((relative_x / root.w.max(1.0)) * count as f64) as usize;
+                    return Some(TrayPopupHit::Inline {
+                        root: index,
+                        control: control.min(count - 1),
+                    });
+                }
                 return Some(TrayPopupHit::Root(index));
             }
         }
@@ -209,12 +236,30 @@ impl TrayPopupModel {
 }
 
 fn build_items(nodes: &[MenuNode]) -> Vec<TrayPopupItem> {
+    let visible = nodes.iter().filter(|node| node.visible).collect::<Vec<_>>();
     let mut result = Vec::new();
     let mut separator_before = false;
+    let mut index = 0;
 
-    for node in nodes.iter().filter(|node| node.visible) {
+    while index < visible.len() {
+        let node = visible[index];
         if is_separator(node) {
             separator_before = true;
+            index += 1;
+            continue;
+        }
+
+        if let Some(inline_controls) = media_control_triplet(&visible, index) {
+            result.push(TrayPopupItem {
+                label: String::new(),
+                node_id: None,
+                children: Vec::new(),
+                inline_controls,
+                separator_before,
+                enabled: true,
+            });
+            separator_before = false;
+            index += 3;
             continue;
         }
 
@@ -223,12 +268,53 @@ fn build_items(nodes: &[MenuNode]) -> Vec<TrayPopupItem> {
             label: decorated_label(node),
             node_id: children.is_empty().then_some(node.id),
             children,
+            inline_controls: Vec::new(),
             separator_before,
             enabled: node.enabled,
         });
         separator_before = false;
+        index += 1;
     }
     result
+}
+
+fn media_control_triplet(nodes: &[&MenuNode], start: usize) -> Option<Vec<TrayPopupInlineControl>> {
+    let triplet = nodes.get(start..start + 3)?;
+    let previous = triplet[0];
+    let toggle = triplet[1];
+    let next = triplet[2];
+    if previous.icon_name != "media-skip-backward"
+        || !matches!(
+            toggle.icon_name.as_str(),
+            "media-playback-start" | "media-playback-pause"
+        )
+        || next.icon_name != "media-skip-forward"
+        || triplet.iter().any(|node| is_separator(node) || !node.children.is_empty())
+    {
+        return None;
+    }
+
+    Some(vec![
+        TrayPopupInlineControl {
+            label: "|<".into(),
+            node_id: previous.id,
+            enabled: previous.enabled,
+        },
+        TrayPopupInlineControl {
+            label: if toggle.icon_name == "media-playback-pause" {
+                "||".into()
+            } else {
+                ">".into()
+            },
+            node_id: toggle.id,
+            enabled: toggle.enabled,
+        },
+        TrayPopupInlineControl {
+            label: ">|".into(),
+            node_id: next.id,
+            enabled: next.enabled,
+        },
+    ])
 }
 
 fn flatten_children(nodes: &[MenuNode], prefix: String) -> Vec<TrayPopupItem> {
@@ -265,6 +351,7 @@ fn flatten_children(nodes: &[MenuNode], prefix: String) -> Vec<TrayPopupItem> {
             },
             node_id: Some(node.id),
             children: Vec::new(),
+            inline_controls: Vec::new(),
             separator_before,
             enabled: node.enabled,
         });
@@ -322,6 +409,12 @@ mod tests {
         }
     }
 
+    fn media_node(id: i32, label: &str, icon_name: &str) -> MenuNode {
+        let mut node = node(id, label);
+        node.icon_name = icon_name.into();
+        node
+    }
+
     #[test]
     fn click_returns_dbus_node_id() {
         let model =
@@ -339,5 +432,33 @@ mod tests {
         let mut model = TrayPopupModel::from_nodes(&[parent], MenuConfig::default(), (100.0, 50.0));
         assert!(model.pointer_moved(120.0, 60.0, 1920.0, 1080.0));
         assert_eq!(model.open_root, Some(0));
+    }
+
+    #[test]
+    fn media_controls_share_one_row_and_keep_individual_clicks() {
+        let nodes = vec![
+            media_node(10, "Previous", "media-skip-backward"),
+            media_node(11, "Play", "media-playback-start"),
+            media_node(12, "Next", "media-skip-forward"),
+            node(13, "Web"),
+        ];
+        let model = TrayPopupModel::from_nodes(&nodes, MenuConfig::default(), (0.0, 0.0));
+        assert_eq!(model.items.len(), 2);
+        assert_eq!(model.items[0].inline_controls.len(), 3);
+
+        let segment = model.style.width as f64 / 3.0;
+        let y = model.style.item_height as f64 / 2.0;
+        assert_eq!(
+            model.click(segment * 0.5, y, 1920.0, 1080.0),
+            TrayPopupClick::Activate(10)
+        );
+        assert_eq!(
+            model.click(segment * 1.5, y, 1920.0, 1080.0),
+            TrayPopupClick::Activate(11)
+        );
+        assert_eq!(
+            model.click(segment * 2.5, y, 1920.0, 1080.0),
+            TrayPopupClick::Activate(12)
+        );
     }
 }
