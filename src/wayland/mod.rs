@@ -75,6 +75,8 @@ use crate::modules::tray::{
 
 mod core;
 mod handlers;
+#[cfg(mhypr_module = "monitor")]
+mod hotplug;
 mod popup_controls;
 mod popup_storage;
 mod popup_system;
@@ -107,6 +109,9 @@ pub fn run(config: BarConfig) -> Result<()> {
     modules.set_width_override("tray", Some(tray.as_ref().map_or(0, TrayState::width)));
 
     let hyprland = Snapshot::refresh().context("failed to read initial Hyprland state")?;
+    #[cfg(mhypr_module = "monitor")]
+    let monitor_hotplug = hotplug::MonitorHotplugState::new(&hyprland)
+        .context("failed to initialize monitor hotplug state")?;
     let hypr_events = hyprland::event_stream()?;
 
     let conn = Connection::connect_to_env().context("failed to connect to Wayland compositor")?;
@@ -141,6 +146,8 @@ pub fn run(config: BarConfig) -> Result<()> {
         modules,
         renderer: Renderer::new(),
         hyprland,
+        #[cfg(mhypr_module = "monitor")]
+        monitor_hotplug,
         tray,
         tray_hover: None,
         tooltip: None,
@@ -215,7 +222,17 @@ pub fn run(config: BarConfig) -> Result<()> {
                 &mut event_buffer,
             ) {
                 Ok(batch) => {
+                    #[cfg(mhypr_module = "monitor")]
+                    let hotplug_pending = if batch.monitor_topology_changed() {
+                        app.schedule_monitor_hotplug(&batch)
+                    } else {
+                        app.monitor_hotplug_pending()
+                    };
+                    #[cfg(not(mhypr_module = "monitor"))]
+                    let hotplug_pending = false;
+
                     if batch.state_changed
+                        && !hotplug_pending
                         && let Err(error) = app.refresh_hyprland()
                     {
                         eprintln!("mhyprbar: failed to refresh Hyprland state: {error:#}");
@@ -313,6 +330,10 @@ pub fn run(config: BarConfig) -> Result<()> {
 
     while !app.exit {
         let mut timeout = app.modules.next_timeout();
+        #[cfg(mhypr_module = "monitor")]
+        if let Some(hotplug_timeout) = app.monitor_hotplug_timeout() {
+            timeout = timeout.min(hotplug_timeout);
+        }
         if let Some(tooltip_timeout) = app.tray_hover_timeout() {
             timeout = timeout.min(tooltip_timeout);
         }
@@ -357,6 +378,10 @@ pub fn run(config: BarConfig) -> Result<()> {
             .context("event loop dispatch failed")?;
         if app.modules.refresh_due() {
             app.draw_all();
+        }
+        #[cfg(mhypr_module = "monitor")]
+        if let Err(error) = app.process_monitor_hotplug_if_due() {
+            eprintln!("mhyprbar: monitor hotplug processing failed: {error:#}");
         }
         app.maybe_show_tray_tooltip(&qh);
         #[cfg(mhypr_module = "audio")]
@@ -623,6 +648,8 @@ struct App {
     modules: ModuleManager,
     renderer: Renderer,
     hyprland: Snapshot,
+    #[cfg(mhypr_module = "monitor")]
+    monitor_hotplug: hotplug::MonitorHotplugState,
     tray: Option<TrayState>,
     tray_hover: Option<TrayHover>,
     tooltip: Option<TooltipSurface>,

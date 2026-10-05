@@ -43,6 +43,53 @@ struct MonitorConfig {
     style: ModuleStyle,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct MonitorHotplugConfig {
+    #[serde(default = "default_hotplug_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_hotplug_restore_workspaces")]
+    pub restore_workspaces: bool,
+    #[serde(default = "default_hotplug_debounce_ms")]
+    pub debounce_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct MonitorHotplugFile {
+    #[serde(default)]
+    hotplug: MonitorHotplugConfig,
+}
+
+impl Default for MonitorHotplugConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_hotplug_enabled(),
+            restore_workspaces: default_hotplug_restore_workspaces(),
+            debounce_ms: default_hotplug_debounce_ms(),
+        }
+    }
+}
+
+impl MonitorHotplugConfig {
+    pub fn load() -> Result<Self> {
+        let file: MonitorHotplugFile = config::load_module(NAME)?;
+        let config = file.hotplug;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            (10..=5000).contains(&self.debounce_ms),
+            "monitor hotplug debounce_ms must be in 10..=5000"
+        );
+        Ok(())
+    }
+
+    pub fn debounce_interval(&self) -> Duration {
+        Duration::from_millis(self.debounce_ms)
+    }
+}
+
 #[derive(Clone)]
 struct MonitorIcon {
     pixels: Arc<[u8]>,
@@ -55,6 +102,15 @@ pub struct MonitorDot {
     pub x: f32,
     pub y: f32,
     pub focused: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingMonitorWindow {
+    pub origin_monitor: String,
+    pub address: String,
+    pub class: String,
+    pub title: String,
+    pub workspace_id: i32,
 }
 
 #[derive(Clone)]
@@ -86,6 +142,7 @@ impl MonitorModule {
         let config: MonitorConfig = config::load_module(NAME)?;
         validate_config(&config)?;
         let _ = crate::modules::monitor::popup::MonitorPopupConfig::load()?;
+        let _ = MonitorHotplugConfig::load()?;
 
         Ok(Self {
             dot_color: config::parse_rgba(&config.dot_color)?,
@@ -305,6 +362,15 @@ fn default_dot_color() -> String {
 }
 fn default_focused_dot_color() -> String {
     "#7CFC8A".into()
+}
+fn default_hotplug_enabled() -> bool {
+    true
+}
+fn default_hotplug_restore_workspaces() -> bool {
+    true
+}
+fn default_hotplug_debounce_ms() -> u64 {
+    250
 }
 
 #[cfg(test)]

@@ -1106,15 +1106,27 @@ impl PointerHandler for App {
                         if !inside {
                             self.close_monitor_popup();
                         } else if let Some(action) = action {
-                            if let Some(popup) = self.monitor_popup.as_mut()
-                                && let Err(error) = popup.model.apply_action(action)
-                            {
-                                eprintln!("mhyprbar: monitor setting action failed: {error:#}");
-                            }
-                            if self.modules.force_refresh("monitor") {
+                            let recalled = if let Some(popup) = self.monitor_popup.as_mut() {
+                                match popup.model.apply_action(action) {
+                                    Ok(address) => address,
+                                    Err(error) => {
+                                        eprintln!("mhyprbar: monitor setting action failed: {error:#}");
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                            if let Some(address) = recalled {
+                                self.monitor_hotplug.acknowledge_window(&address);
+                                self.close_monitor_popup();
                                 self.draw_all();
+                            } else {
+                                if self.modules.force_refresh("monitor") {
+                                    self.draw_all();
+                                }
+                                redraw = true;
                             }
-                            redraw = true;
                         }
                     }
                     PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
@@ -1352,6 +1364,10 @@ impl PointerHandler for App {
                             }
                         }
                         BTN_RIGHT => {
+                            #[cfg(mhypr_module = "monitor")]
+                            if self.activate_monitor_missing_popup(qh, index, event.position.0) {
+                                continue;
+                            }
                             #[cfg(mhypr_module = "layout")]
                             if self.activate_layout_popup(qh, index, event.position.0) {
                                 continue;

@@ -610,7 +610,7 @@ impl Renderer {
                 w: content_w,
                 h: cfg.title_height,
             },
-            &format!("Displays · {}", model.monitors.len()),
+            &model.title_text(),
             &title_style,
             0,
             0,
@@ -634,7 +634,72 @@ impl Renderer {
         let mut detail_style = cfg.style.clone();
         detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
 
-        if model.monitors.is_empty() {
+        if model.is_missing_windows() {
+            if model.missing_windows.is_empty() {
+                self.draw_text_content(
+                    canvas,
+                    width,
+                    height,
+                    Rect {
+                        x: content_x,
+                        y,
+                        w: content_w,
+                        h: cfg.row_height,
+                    },
+                    "No windows from disconnected displays",
+                    &cfg.style,
+                    0,
+                    0,
+                )?;
+                y += cfg.row_height;
+            } else {
+                for (index, window) in model.missing_windows.iter().enumerate() {
+                    let row = Rect {
+                        x: content_x,
+                        y,
+                        w: content_w,
+                        h: cfg.row_height,
+                    };
+                    if model.hovered_row == Some(index) {
+                        fill_rect(canvas, width, height, row, hover_background);
+                    }
+                    let primary = crate::modules::monitor::popup::MonitorPopupModel::missing_primary_text(window);
+                    let detail = crate::modules::monitor::popup::MonitorPopupModel::missing_detail_text(window);
+                    let top_h = (cfg.row_height / 2).max(1);
+                    self.draw_text_content(
+                        canvas,
+                        width,
+                        height,
+                        Rect {
+                            x: row.x + 6,
+                            y: row.y,
+                            w: (row.w - 12).max(1),
+                            h: top_h,
+                        },
+                        &primary,
+                        &cfg.style,
+                        0,
+                        0,
+                    )?;
+                    self.draw_text_content(
+                        canvas,
+                        width,
+                        height,
+                        Rect {
+                            x: row.x + 6,
+                            y: row.y + top_h,
+                            w: (row.w - 12).max(1),
+                            h: (row.h - top_h).max(1),
+                        },
+                        &detail,
+                        &detail_style,
+                        0,
+                        0,
+                    )?;
+                    y += cfg.row_height;
+                }
+            }
+        } else if model.monitors.is_empty() {
             self.draw_text_content(
                 canvas,
                 width,

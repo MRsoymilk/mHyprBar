@@ -82,14 +82,14 @@ pub struct ActiveWindow {
     pub title: String,
 }
 
-#[cfg(mhypr_module = "active_window")]
+#[cfg(any(mhypr_module = "active_window", mhypr_module = "monitor"))]
 #[derive(Clone, Debug, Deserialize, Default)]
 struct WindowWorkspaceJson {
     #[serde(default)]
     id: i32,
 }
 
-#[cfg(mhypr_module = "active_window")]
+#[cfg(any(mhypr_module = "active_window", mhypr_module = "monitor"))]
 #[derive(Clone, Debug, Deserialize)]
 struct WindowClientJson {
     #[serde(default)]
@@ -108,7 +108,7 @@ struct WindowClientJson {
     mapped: bool,
 }
 
-#[cfg(mhypr_module = "active_window")]
+#[cfg(any(mhypr_module = "active_window", mhypr_module = "monitor"))]
 #[derive(Clone, Debug)]
 pub struct WindowClient {
     pub address: String,
@@ -156,6 +156,10 @@ struct ClientJson {
 pub struct MonitorState {
     pub id: i32,
     pub name: String,
+    pub description: String,
+    pub make: String,
+    pub model: String,
+    pub serial: String,
     pub x: i32,
     pub y: i32,
     pub height: i32,
@@ -211,6 +215,7 @@ impl MonitorInfo {
 pub struct Snapshot {
     monitors: Vec<MonitorState>,
     workspace_windows: HashMap<i32, u32>,
+    workspace_monitors: HashMap<String, Vec<i32>>,
 }
 
 impl Snapshot {
@@ -220,11 +225,19 @@ impl Snapshot {
         let workspaces: Vec<WorkspaceJson> = serde_json::from_str(request("j/workspaces")?.trim())
             .context("invalid Hyprland workspaces JSON")?;
 
+        let monitor_names = monitors
+            .iter()
+            .map(|monitor| (monitor.id, monitor.name.clone()))
+            .collect::<HashMap<_, _>>();
         let monitors = monitors
             .into_iter()
             .map(|monitor| MonitorState {
                 id: monitor.id,
                 name: monitor.name,
+                description: monitor.description,
+                make: monitor.make,
+                model: monitor.model,
+                serial: monitor.serial,
                 x: monitor.x,
                 y: monitor.y,
                 height: monitor.height,
@@ -232,23 +245,86 @@ impl Snapshot {
             })
             .collect();
 
-        let workspace_windows = workspaces
-            .into_iter()
-            .filter(|workspace| workspace.id > 0)
-            .map(|workspace| {
-                let _ = (workspace.monitor_id, workspace.monitor);
-                (workspace.id, workspace.windows.max(0) as u32)
-            })
-            .collect();
+        let mut workspace_windows = HashMap::new();
+        let mut workspace_monitors: HashMap<String, Vec<i32>> = HashMap::new();
+        for workspace in workspaces.into_iter().filter(|workspace| workspace.id > 0) {
+            workspace_windows.insert(workspace.id, workspace.windows.max(0) as u32);
+            let monitor_name = if workspace.monitor.trim().is_empty() {
+                monitor_names
+                    .get(&workspace.monitor_id)
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                workspace.monitor
+            };
+            if !monitor_name.is_empty() {
+                workspace_monitors
+                    .entry(monitor_name)
+                    .or_default()
+                    .push(workspace.id);
+            }
+        }
+        for workspaces in workspace_monitors.values_mut() {
+            workspaces.sort_unstable();
+            workspaces.dedup();
+        }
 
         Ok(Self {
             monitors,
             workspace_windows,
+            workspace_monitors,
         })
+    }
+
+    pub fn monitors(&self) -> &[MonitorState] {
+        &self.monitors
     }
 
     pub fn monitor_by_name(&self, name: &str) -> Option<&MonitorState> {
         self.monitors.iter().find(|monitor| monitor.name == name)
+    }
+
+    pub fn workspaces_for_monitor(&self, name: &str) -> &[i32] {
+        self.workspace_monitors
+            .get(name)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn has_workspace(&self, workspace_id: i32) -> bool {
+        self.workspace_windows.contains_key(&workspace_id)
+    }
+
+    pub fn monitor_for_workspace(&self, workspace_id: i32) -> Option<&str> {
+        self.workspace_monitors.iter().find_map(|(monitor, workspaces)| {
+            workspaces
+                .contains(&workspace_id)
+                .then_some(monitor.as_str())
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_snapshot(
+        monitors: Vec<MonitorState>,
+        assignments: &[(i32, &str)],
+    ) -> Self {
+        let mut workspace_windows = HashMap::new();
+        let mut workspace_monitors: HashMap<String, Vec<i32>> = HashMap::new();
+        for (workspace, monitor) in assignments {
+            workspace_windows.insert(*workspace, 1);
+            workspace_monitors
+                .entry((*monitor).to_owned())
+                .or_default()
+                .push(*workspace);
+        }
+        for workspaces in workspace_monitors.values_mut() {
+            workspaces.sort_unstable();
+        }
+        Self {
+            monitors,
+            workspace_windows,
+            workspace_monitors,
+        }
     }
 
     pub fn monitor_by_index(&self, index: usize) -> Option<&MonitorState> {
@@ -269,6 +345,14 @@ impl Snapshot {
 pub struct EventBatch {
     pub state_changed: bool,
     pub active_window_changed: bool,
+    pub monitor_added: Vec<String>,
+    pub monitor_removed: Vec<String>,
+}
+
+impl EventBatch {
+    pub fn monitor_topology_changed(&self) -> bool {
+        !self.monitor_added.is_empty() || !self.monitor_removed.is_empty()
+    }
 }
 
 #[cfg(mhypr_module = "active_window")]
@@ -284,7 +368,7 @@ pub fn active_window() -> Result<ActiveWindow> {
     })
 }
 
-#[cfg(mhypr_module = "active_window")]
+#[cfg(any(mhypr_module = "active_window", mhypr_module = "monitor"))]
 pub fn window_clients() -> Result<Vec<WindowClient>> {
     let raw = request("j/clients")?;
     let clients: Vec<WindowClientJson> =
@@ -303,7 +387,7 @@ pub fn window_clients() -> Result<Vec<WindowClient>> {
         .collect())
 }
 
-#[cfg(mhypr_module = "active_window")]
+#[cfg(any(mhypr_module = "active_window", mhypr_module = "monitor"))]
 pub fn focus_window(address: &str) -> Result<()> {
     let address = address.trim();
     let raw = address.strip_prefix("0x").unwrap_or(address);
@@ -329,6 +413,30 @@ pub fn focus_window(address: &str) -> Result<()> {
             Ok(())
         }
     }
+}
+
+#[cfg(mhypr_module = "monitor")]
+pub fn move_window_to_workspace(address: &str, workspace_id: i32) -> Result<()> {
+    if workspace_id <= 0 {
+        bail!("invalid workspace id {workspace_id}");
+    }
+    let address = address.trim();
+    let raw = address.strip_prefix("0x").unwrap_or(address);
+    if raw.is_empty() || !raw.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("invalid Hyprland window address");
+    }
+
+    let selector = format!("address:0x{raw}");
+    let response = request(&format!(
+        "dispatch movetoworkspacesilent {workspace_id},{selector}"
+    ))?;
+    if !command_succeeded(&response) {
+        bail!(
+            "Hyprland rejected window move request: {}",
+            response.trim()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(mhypr_module = "layout")]
@@ -475,21 +583,83 @@ pub fn read_event_batch(stream: &UnixStream, buffer: &mut String) -> Result<Even
     while let Some(newline) = buffer.find('\n') {
         let line = buffer[..newline].trim_end_matches('\r').to_owned();
         buffer.drain(..=newline);
-        let event = line.split_once(">>").map(|(event, _)| event).unwrap_or("");
-        match event {
-            "workspace" | "workspacev2" | "focusedmon" | "focusedmonv2" | "createworkspace"
-            | "createworkspacev2" | "destroyworkspace" | "destroyworkspacev2" | "moveworkspace"
-            | "moveworkspacev2" | "openwindow" | "closewindow" | "movewindow"
-            | "movewindowv2" | "monitoradded" | "monitoraddedv2" | "monitorremoved"
-            | "monitorremovedv2" | "configreloaded" => batch.state_changed = true,
-            "activewindow" | "activewindowv2" | "windowtitle" | "windowtitlev2" => {
-                batch.active_window_changed = true
-            }
-            _ => {}
-        }
+        parse_event_line(&line, &mut batch);
     }
 
     Ok(batch)
+}
+
+fn parse_event_line(line: &str, batch: &mut EventBatch) {
+    let (event, payload) = line.split_once(">>").unwrap_or(("", ""));
+    match event {
+        "workspace" | "workspacev2" | "focusedmon" | "focusedmonv2" | "createworkspace"
+        | "createworkspacev2" | "destroyworkspace" | "destroyworkspacev2" | "moveworkspace"
+        | "moveworkspacev2" | "openwindow" | "closewindow" | "movewindow"
+        | "movewindowv2" | "configreloaded" => batch.state_changed = true,
+        "monitoradded" => {
+            batch.state_changed = true;
+            push_unique_monitor(&mut batch.monitor_added, payload);
+        }
+        "monitoraddedv2" => {
+            batch.state_changed = true;
+            let name = payload.split(',').nth(1).unwrap_or(payload);
+            push_unique_monitor(&mut batch.monitor_added, name);
+        }
+        "monitorremoved" => {
+            batch.state_changed = true;
+            push_unique_monitor(&mut batch.monitor_removed, payload);
+        }
+        "monitorremovedv2" => {
+            batch.state_changed = true;
+            let fields = payload.split(',').collect::<Vec<_>>();
+            let name = fields.get(1).copied().unwrap_or(payload);
+            push_unique_monitor(&mut batch.monitor_removed, name);
+        }
+        "activewindow" | "activewindowv2" | "windowtitle" | "windowtitlev2" => {
+            batch.active_window_changed = true
+        }
+        _ => {}
+    }
+}
+
+fn push_unique_monitor(monitors: &mut Vec<String>, name: &str) {
+    let name = name.trim();
+    if !name.is_empty() && !monitors.iter().any(|existing| existing == name) {
+        monitors.push(name.to_owned());
+    }
+}
+
+pub fn move_workspace_to_monitor(workspace_id: i32, monitor_name: &str) -> Result<()> {
+    if workspace_id <= 0 {
+        bail!("invalid workspace id {workspace_id}");
+    }
+    let monitor_name = monitor_name.trim();
+    if monitor_name.is_empty()
+        || monitor_name
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        bail!("invalid monitor name");
+    }
+    let monitor = lua_quote(monitor_name);
+    let lua = format!(
+        "hl.dsp.workspace.move({{ workspace = {workspace_id}, monitor = {monitor} }})"
+    );
+    match request(&format!("eval {lua}")) {
+        Ok(response) if command_succeeded(&response) => Ok(()),
+        _ => {
+            let response = request(&format!(
+                "dispatch moveworkspacetomonitor {workspace_id} {monitor_name}"
+            ))?;
+            if !command_succeeded(&response) {
+                bail!(
+                    "Hyprland rejected workspace move to monitor: {}",
+                    response.trim()
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 pub fn switch_workspace(monitor_name: &str, workspace_id: i32) -> Result<()> {
@@ -560,11 +730,23 @@ fn socket_path(socket_name: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::lua_quote;
+    use super::{EventBatch, lua_quote, parse_event_line};
 
     #[test]
     fn quotes_monitor_name_for_lua() {
         assert_eq!(lua_quote("DP-1"), "\"DP-1\"");
         assert_eq!(lua_quote("a\\b\"c"), "\"a\\\\b\\\"c\"");
+    }
+
+    #[test]
+    fn parses_monitor_hotplug_events_without_duplicates() {
+        let mut batch = EventBatch::default();
+        parse_event_line("monitoraddedv2>>2,HDMI-A-1,Dell U2720Q", &mut batch);
+        parse_event_line("monitoradded>>HDMI-A-1", &mut batch);
+        parse_event_line("monitorremoved>>DP-1", &mut batch);
+        assert!(batch.state_changed);
+        assert!(batch.monitor_topology_changed());
+        assert_eq!(batch.monitor_added, ["HDMI-A-1"]);
+        assert_eq!(batch.monitor_removed, ["DP-1"]);
     }
 }

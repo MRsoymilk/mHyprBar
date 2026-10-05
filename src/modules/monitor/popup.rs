@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::{Result, ensure};
 use serde::Deserialize;
 
+use super::MissingMonitorWindow;
 use crate::{
     config::{self, ModuleStyle},
     hyprland::{self, MonitorInfo},
@@ -123,6 +124,7 @@ impl MonitorPopupConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MonitorPopupAction {
     Select(usize),
+    RecallWindow(usize),
     Focus,
     ScaleDown,
     ScaleUp,
@@ -150,12 +152,20 @@ pub fn context_action(index: usize) -> Option<MonitorPopupAction> {
     .copied()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MonitorPopupMode {
+    Displays,
+    MissingWindows { target_monitor: String },
+}
+
 pub struct MonitorPopupModel {
     pub config: MonitorPopupConfig,
     pub monitors: Vec<MonitorInfo>,
+    pub missing_windows: Vec<MissingMonitorWindow>,
     pub selected: usize,
     pub hovered_row: Option<usize>,
     pub context_row: Option<usize>,
+    mode: MonitorPopupMode,
 }
 
 impl MonitorPopupModel {
@@ -170,9 +180,40 @@ impl MonitorPopupModel {
         Ok(Self {
             config,
             monitors,
+            missing_windows: Vec::new(),
             selected,
             hovered_row: None,
             context_row: None,
+            mode: MonitorPopupMode::Displays,
+        })
+    }
+
+    pub fn new_missing(
+        target_monitor: String,
+        mut missing_windows: Vec<MissingMonitorWindow>,
+    ) -> Result<Self> {
+        let config = MonitorPopupConfig::load()?;
+        let monitors = hyprland::monitor_infos()?;
+        let selected = monitors
+            .iter()
+            .position(|monitor| monitor.name == target_monitor)
+            .unwrap_or(0)
+            .min(monitors.len().saturating_sub(1));
+        missing_windows.sort_by(|left, right| {
+            left.origin_monitor
+                .cmp(&right.origin_monitor)
+                .then_with(|| left.workspace_id.cmp(&right.workspace_id))
+                .then_with(|| left.class.cmp(&right.class))
+                .then_with(|| left.title.cmp(&right.title))
+        });
+        Ok(Self {
+            config,
+            monitors,
+            missing_windows,
+            selected,
+            hovered_row: None,
+            context_row: None,
+            mode: MonitorPopupMode::MissingWindows { target_monitor },
         })
     }
 
@@ -202,8 +243,7 @@ impl MonitorPopupModel {
     }
 
     pub fn panel_height(&self) -> i32 {
-        let base = self
-            .config
+        self.config
             .padding
             .saturating_mul(2)
             .saturating_add(self.config.title_height)
@@ -211,9 +251,30 @@ impl MonitorPopupModel {
             .saturating_add(
                 self.config
                     .row_height
-                    .saturating_mul(self.monitors.len().max(1) as i32),
-            );
-        base
+                    .saturating_mul(self.row_count().max(1) as i32),
+            )
+    }
+
+    pub fn is_missing_windows(&self) -> bool {
+        matches!(self.mode, MonitorPopupMode::MissingWindows { .. })
+    }
+
+    pub fn title_text(&self) -> String {
+        match &self.mode {
+            MonitorPopupMode::Displays => format!("Displays · {}", self.monitors.len()),
+            MonitorPopupMode::MissingWindows { target_monitor } => format!(
+                "Disconnected displays · {} windows → {target_monitor}",
+                self.missing_windows.len()
+            ),
+        }
+    }
+
+    fn row_count(&self) -> usize {
+        if self.is_missing_windows() {
+            self.missing_windows.len()
+        } else {
+            self.monitors.len()
+        }
     }
 
     pub fn selected_monitor(&self) -> Option<&MonitorInfo> {
@@ -226,10 +287,14 @@ impl MonitorPopupModel {
             return None;
         }
         let index = ((local_y - start as f64) / self.config.row_height as f64) as usize;
-        (index < self.monitors.len()).then_some(index)
+        (index < self.row_count()).then_some(index)
     }
 
     pub fn open_context_at(&mut self, local_y: f64) -> bool {
+        if self.is_missing_windows() {
+            self.context_row = None;
+            return false;
+        }
         let Some(index) = self.row_at(local_y) else {
             self.context_row = None;
             return false;
@@ -241,7 +306,11 @@ impl MonitorPopupModel {
 
     pub fn action_at(&self, local_x: f64, local_y: f64) -> Option<MonitorPopupAction> {
         if let Some(index) = self.row_at(local_y) {
-            return Some(MonitorPopupAction::Select(index));
+            return Some(if self.is_missing_windows() {
+                MonitorPopupAction::RecallWindow(index)
+            } else {
+                MonitorPopupAction::Select(index)
+            });
         }
         self.context_action_at(local_x, local_y)
     }
@@ -251,6 +320,9 @@ impl MonitorPopupModel {
         local_x: f64,
         local_y: f64,
     ) -> Option<MonitorPopupAction> {
+        if self.is_missing_windows() {
+            return None;
+        }
         self.context_row?;
         let controls_y = self
             .config
@@ -286,16 +358,43 @@ impl MonitorPopupModel {
         .copied()
     }
 
-    pub fn apply_action(&mut self, action: MonitorPopupAction) -> Result<()> {
-        if let MonitorPopupAction::Select(index) = action {
-            if index < self.monitors.len() {
-                self.selected = index;
+    pub fn apply_action(&mut self, action: MonitorPopupAction) -> Result<Option<String>> {
+        match action {
+            MonitorPopupAction::Select(index) => {
+                if index < self.monitors.len() {
+                    self.selected = index;
+                }
+                return Ok(None);
             }
-            return Ok(());
+            MonitorPopupAction::RecallWindow(index) => {
+                let MonitorPopupMode::MissingWindows { target_monitor } = &self.mode else {
+                    return Ok(None);
+                };
+                let Some(window) = self.missing_windows.get(index).cloned() else {
+                    return Ok(None);
+                };
+                let monitor = self
+                    .monitors
+                    .iter()
+                    .find(|monitor| monitor.name == *target_monitor)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("target monitor {target_monitor} is unavailable"))?;
+                ensure!(
+                    monitor.active_workspace > 0,
+                    "target monitor {} has no active workspace",
+                    monitor.name
+                );
+                hyprland::move_window_to_workspace(&window.address, monitor.active_workspace)?;
+                hyprland::focus_monitor(&monitor.name)?;
+                hyprland::switch_workspace(&monitor.name, monitor.active_workspace)?;
+                hyprland::focus_window(&window.address)?;
+                return Ok(Some(window.address));
+            }
+            _ => {}
         }
 
         let Some(monitor) = self.selected_monitor().cloned() else {
-            return Ok(());
+            return Ok(None);
         };
 
         match action {
@@ -370,9 +469,10 @@ impl MonitorPopupModel {
                     )?;
                 }
             }
-            MonitorPopupAction::Select(_) => {}
+            MonitorPopupAction::Select(_) | MonitorPopupAction::RecallWindow(_) => {}
         }
-        self.refresh()
+        self.refresh()?;
+        Ok(None)
     }
 
     pub fn primary_text(monitor: &MonitorInfo) -> String {
@@ -391,6 +491,24 @@ impl MonitorPopupModel {
             monitor.y,
             monitor.active_workspace
         )
+    }
+
+    pub fn missing_primary_text(window: &MissingMonitorWindow) -> String {
+        let class = if window.class.trim().is_empty() {
+            "window"
+        } else {
+            window.class.trim()
+        };
+        format!("{} · {class}", window.origin_monitor)
+    }
+
+    pub fn missing_detail_text(window: &MissingMonitorWindow) -> String {
+        let title = window.title.trim();
+        if title.is_empty() {
+            format!("workspace {}", window.workspace_id)
+        } else {
+            format!("ws {} · {title}", window.workspace_id)
+        }
     }
 }
 
@@ -493,10 +611,10 @@ fn default_popup_style() -> ModuleStyle {
 #[cfg(test)]
 mod tests {
     use super::{
-        MonitorPopupAction, MonitorPopupConfig, MonitorPopupModel, adjacent_mode, normalize_mode,
-        same_mode,
+        MonitorPopupAction, MonitorPopupConfig, MonitorPopupMode, MonitorPopupModel, adjacent_mode,
+        normalize_mode, same_mode,
     };
-    use crate::hyprland::MonitorInfo;
+    use crate::{hyprland::MonitorInfo, modules::monitor::MissingMonitorWindow};
 
     #[test]
     fn mode_matching_ignores_hz_suffix_and_small_rounding() {
@@ -539,13 +657,42 @@ mod tests {
     }
 
     #[test]
+    fn missing_window_row_maps_to_recall_action() {
+        let mut model = MonitorPopupModel {
+            config: MonitorPopupConfig::default(),
+            monitors: Vec::new(),
+            missing_windows: vec![MissingMonitorWindow {
+                origin_monitor: "HDMI-A-1".into(),
+                address: "0x1234".into(),
+                class: "firefox".into(),
+                title: "Docs".into(),
+                workspace_id: 7,
+            }],
+            selected: 0,
+            hovered_row: None,
+            context_row: None,
+            mode: MonitorPopupMode::MissingWindows {
+                target_monitor: "eDP-1".into(),
+            },
+        };
+        let y = (model.config.padding + model.config.title_height + 2) as f64;
+        assert_eq!(
+            model.action_at(model.config.padding as f64 + 1.0, y),
+            Some(MonitorPopupAction::RecallWindow(0))
+        );
+        assert!(!model.open_context_at(y));
+    }
+
+    #[test]
     fn action_layout_maps_controls() {
         let model = MonitorPopupModel {
             config: MonitorPopupConfig::default(),
             monitors: Vec::new(),
+            missing_windows: Vec::new(),
             selected: 0,
             hovered_row: None,
             context_row: Some(0),
+            mode: MonitorPopupMode::Displays,
         };
         let controls_y =
             model.config.padding + model.config.title_height + 1 + model.config.row_height + 1;

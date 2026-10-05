@@ -861,8 +861,32 @@ impl App {
             self.close_monitor_popup();
             return Ok(true);
         }
-
         let model = MonitorPopupModel::new()?;
+        self.open_monitor_popup_model(qh, bar_index, local_x, model)
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    pub(super) fn toggle_monitor_missing_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+        target_monitor: String,
+        missing_windows: Vec<crate::modules::monitor::MissingMonitorWindow>,
+    ) -> Result<bool> {
+        self.close_monitor_popup();
+        let model = MonitorPopupModel::new_missing(target_monitor, missing_windows)?;
+        self.open_monitor_popup_model(qh, bar_index, local_x, model)
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    fn open_monitor_popup_model(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        local_x: f64,
+        model: MonitorPopupModel,
+    ) -> Result<bool> {
         if !model.config.enabled {
             return Ok(false);
         }

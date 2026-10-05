@@ -82,6 +82,59 @@ impl App {
 
     pub(super) fn refresh_hyprland(&mut self) -> Result<()> {
         self.hyprland = Snapshot::refresh()?;
+        #[cfg(mhypr_module = "monitor")]
+        self.monitor_hotplug.sync_if_idle(&self.hyprland);
+        self.draw_all();
+        Ok(())
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    pub(super) fn schedule_monitor_hotplug(&mut self, batch: &hyprland::EventBatch) -> bool {
+        self.monitor_hotplug.schedule(&self.hyprland, batch)
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    pub(super) fn monitor_hotplug_pending(&self) -> bool {
+        self.monitor_hotplug.pending()
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    pub(super) fn monitor_hotplug_timeout(&self) -> Option<Duration> {
+        self.monitor_hotplug.timeout()
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    pub(super) fn process_monitor_hotplug_if_due(&mut self) -> Result<()> {
+        if !self.monitor_hotplug.due() {
+            return Ok(());
+        }
+
+        let mut snapshot = match Snapshot::refresh() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.monitor_hotplug.defer();
+                return Err(error);
+            }
+        };
+        let restored = self.monitor_hotplug.restore_workspaces(&snapshot)?;
+        if restored > 0 {
+            snapshot = match Snapshot::refresh() {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    self.monitor_hotplug.defer();
+                    return Err(error);
+                }
+            };
+        }
+
+        self.hyprland = snapshot;
+        self.monitor_hotplug.complete(&self.hyprland);
+        self.modules.force_refresh("monitor");
+        if let Some(popup) = self.monitor_popup.as_mut()
+            && let Err(error) = popup.model.refresh()
+        {
+            eprintln!("mhyprbar: monitor popup refresh after hotplug failed: {error:#}");
+        }
         self.draw_all();
         Ok(())
     }
@@ -95,6 +148,8 @@ impl App {
     pub(super) fn reload_config(&mut self) -> Result<()> {
         let config = crate::validate_config().context("reload validation failed")?;
         let background = config.background_rgba()?;
+        #[cfg(mhypr_module = "monitor")]
+        self.monitor_hotplug.reload_config()?;
         let mut modules = ModuleManager::load()?;
         modules.refresh_due();
         self.clear_tray_hover();
@@ -856,6 +911,51 @@ impl App {
             Ok(false) => {}
             Err(error) => eprintln!("mhyprbar: module {name} action failed: {error:#}"),
         }
+    }
+
+    #[cfg(mhypr_module = "monitor")]
+    pub(super) fn activate_monitor_missing_popup(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        bar_index: usize,
+        x: f64,
+    ) -> bool {
+        let Some(bar) = self.bars.get(bar_index) else {
+            return false;
+        };
+        let workspace_visible = self.monitor_for_bar(bar_index).is_some();
+        let Some(hit) =
+            render::module_at_x(x, bar.width, workspace_visible, &self.config, &self.modules)
+        else {
+            return false;
+        };
+        if hit.name != "monitor" {
+            return false;
+        }
+
+        let Some(target_monitor) = self
+            .monitor_for_bar(bar_index)
+            .map(|monitor| monitor.name.clone())
+        else {
+            return true;
+        };
+        let missing_windows = match self.monitor_hotplug.missing_windows() {
+            Ok(windows) => windows,
+            Err(error) => {
+                eprintln!("mhyprbar: failed to read disconnected display windows: {error:#}");
+                Vec::new()
+            }
+        };
+        if let Err(error) = self.toggle_monitor_missing_popup(
+            qh,
+            bar_index,
+            x,
+            target_monitor,
+            missing_windows,
+        ) {
+            eprintln!("mhyprbar: monitor missing-window popup action failed: {error:#}");
+        }
+        true
     }
 
     #[cfg(mhypr_module = "layout")]

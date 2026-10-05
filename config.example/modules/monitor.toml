@@ -8,6 +8,11 @@ dot_size = 4
 dot_color = "#A0A0A0"
 focused_dot_color = "#7CFC8A"
 
+[hotplug]
+enabled = true
+restore_workspaces = true
+debounce_ms = 250
+
 [style]
 foreground = "#F2F2F2"
 background = "transparent"
