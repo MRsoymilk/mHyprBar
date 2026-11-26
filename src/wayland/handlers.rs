@@ -23,9 +23,20 @@ impl CompositorHandler for App {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
+        #[cfg(mhypr_module = "monitor")]
+        if let Some(popup) = self.monitor_popup.as_mut()
+            && popup.layer.wl_surface() == surface
+        {
+            popup.frame_pending = false;
+            if std::mem::take(&mut popup.redraw_pending) {
+                self.draw_monitor_popup();
+            }
+        }
+        #[cfg(not(mhypr_module = "monitor"))]
+        let _ = surface;
     }
 
     fn surface_enter(
@@ -130,12 +141,12 @@ impl LayerShellHandler for App {
             return;
         }
         #[cfg(mhypr_module = "monitor")]
-        if self
-            .monitor_context
-            .as_ref()
-            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        if let Some(index) = self
+            .monitor_identify
+            .iter()
+            .position(|badge| badge.layer.wl_surface() == layer.wl_surface())
         {
-            self.monitor_context = None;
+            self.monitor_identify.remove(index);
             return;
         }
         #[cfg(mhypr_module = "monitor")]
@@ -144,8 +155,7 @@ impl LayerShellHandler for App {
             .as_ref()
             .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
         {
-            self.monitor_context = None;
-            self.monitor_popup = None;
+            self.close_monitor_popup();
             return;
         }
         #[cfg(mhypr_module = "network")]
@@ -327,17 +337,14 @@ impl LayerShellHandler for App {
             return;
         }
         #[cfg(mhypr_module = "monitor")]
-        if self
-            .monitor_context
-            .as_ref()
-            .is_some_and(|popup| popup.layer.wl_surface() == layer.wl_surface())
+        if let Some(index) = self
+            .monitor_identify
+            .iter()
+            .position(|badge| badge.layer.wl_surface() == layer.wl_surface())
         {
-            if let Some(popup) = self.monitor_context.as_mut() {
-                popup.width = configure.new_size.0.max(1);
-                popup.height = configure.new_size.1.max(1);
-                popup.configured = true;
+            if let Err(error) = self.draw_identify_badge(index, configure.new_size) {
+                eprintln!("mhyprbar: could not draw display number: {error:#}");
             }
-            self.draw_monitor_context();
             return;
         }
         #[cfg(mhypr_module = "monitor")]
@@ -350,6 +357,22 @@ impl LayerShellHandler for App {
                 popup.width = configure.new_size.0.max(1);
                 popup.height = configure.new_size.1.max(1);
                 popup.configured = true;
+                if popup.model.settings.is_some() {
+                    popup.model.config.width = popup.preferred_width.min(popup.width as i32);
+                }
+                let panel_w = f64::from(popup.model.config.width);
+                popup.panel_x = (popup.anchor_x - panel_w / 2.0)
+                    .clamp(0.0, (f64::from(popup.width) - panel_w).max(0.0))
+                    .round();
+                popup.panel_y = if self.config.position == "bottom" {
+                    (f64::from(popup.height)
+                        - f64::from(popup.bar_height)
+                        - f64::from(popup.model.panel_height())
+                        - 2.0)
+                        .max(0.0)
+                } else {
+                    f64::from(popup.bar_height) + 2.0
+                };
             }
             self.draw_monitor_popup();
             return;
@@ -987,174 +1010,11 @@ impl PointerHandler for App {
 
             #[cfg(mhypr_module = "monitor")]
             if self
-                .monitor_context
-                .as_ref()
-                .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
-            {
-                let mut redraw_context = false;
-                match event.kind {
-                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                        if let Some(context) = self.monitor_context.as_mut() {
-                            let inside_x = event.position.0 >= context.panel_x
-                                && event.position.0
-                                    < context.panel_x + context.panel_width as f64;
-                            let inside_y = event.position.1 >= context.panel_y
-                                && event.position.1
-                                    < context.panel_y + (context.row_height * 9) as f64;
-                            let next = if inside_x && inside_y {
-                                Some(
-                                    ((event.position.1 - context.panel_y)
-                                        / context.row_height as f64)
-                                        .floor() as usize,
-                                )
-                            } else {
-                                None
-                            };
-                            if context.hovered_action != next {
-                                context.hovered_action = next;
-                                redraw_context = true;
-                            }
-                        }
-                    }
-                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
-                        let action = self.monitor_context.as_ref().and_then(|context| {
-                            let inside_x = event.position.0 >= context.panel_x
-                                && event.position.0
-                                    < context.panel_x + context.panel_width as f64;
-                            let inside_y = event.position.1 >= context.panel_y
-                                && event.position.1
-                                    < context.panel_y + (context.row_height * 9) as f64;
-                            if !(inside_x && inside_y) {
-                                return None;
-                            }
-                            let index = ((event.position.1 - context.panel_y)
-                                / context.row_height as f64)
-                                .floor() as usize;
-                            context_action(index)
-                        });
-                        if let Some(action) = action {
-                            if let Some(popup) = self.monitor_popup.as_mut()
-                                && let Err(error) = popup.model.apply_action(action)
-                            {
-                                eprintln!("mhyprbar: monitor context action failed: {error:#}");
-                            }
-                            if self.modules.force_refresh("monitor") {
-                                self.draw_all();
-                            }
-                            self.monitor_context = None;
-                            self.draw_monitor_popup();
-                        } else {
-                            self.monitor_context = None;
-                        }
-                    }
-                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
-                        self.monitor_context = None;
-                    }
-                    _ => {}
-                }
-                if redraw_context {
-                    self.draw_monitor_context();
-                }
-                continue;
-            }
-
-            #[cfg(mhypr_module = "monitor")]
-            if self
                 .monitor_popup
                 .as_ref()
                 .is_some_and(|popup| popup.layer.wl_surface() == &event.surface)
             {
-                let mut redraw = false;
-                match event.kind {
-                    PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                        if let Some(popup) = self.monitor_popup.as_mut() {
-                            let local_y = event.position.1 - popup.panel_y;
-                            let next = if event.position.0 >= popup.panel_x
-                                && event.position.0
-                                    < popup.panel_x + popup.model.config.width as f64
-                            {
-                                popup.model.row_at(local_y)
-                            } else {
-                                None
-                            };
-                            if popup.model.hovered_row != next {
-                                popup.model.hovered_row = next;
-                                redraw = true;
-                            }
-                        }
-                    }
-                    PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
-                        let (inside, action) =
-                            self.monitor_popup.as_ref().map_or((false, None), |popup| {
-                                let inside = event.position.0 >= popup.panel_x
-                                    && event.position.0
-                                        < popup.panel_x + popup.model.config.width as f64
-                                    && event.position.1 >= popup.panel_y
-                                    && event.position.1
-                                        < popup.panel_y + popup.model.panel_height() as f64;
-                                let action = inside
-                                    .then(|| {
-                                        popup.model.action_at(
-                                            event.position.0 - popup.panel_x,
-                                            event.position.1 - popup.panel_y,
-                                        )
-                                    })
-                                    .flatten();
-                                (inside, action)
-                            });
-
-                        if !inside {
-                            self.close_monitor_popup();
-                        } else if let Some(action) = action {
-                            let recalled = if let Some(popup) = self.monitor_popup.as_mut() {
-                                match popup.model.apply_action(action) {
-                                    Ok(address) => address,
-                                    Err(error) => {
-                                        eprintln!("mhyprbar: monitor setting action failed: {error:#}");
-                                        None
-                                    }
-                                }
-                            } else {
-                                None
-                            };
-                            if let Some(address) = recalled {
-                                self.monitor_hotplug.acknowledge_window(&address);
-                                self.close_monitor_popup();
-                                self.draw_all();
-                            } else {
-                                if self.modules.force_refresh("monitor") {
-                                    self.draw_all();
-                                }
-                                redraw = true;
-                            }
-                        }
-                    }
-                    PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
-                        let handled = if let Some(popup) = self.monitor_popup.as_mut() {
-                            let inside_x = event.position.0 >= popup.panel_x
-                                && event.position.0
-                                    < popup.panel_x + popup.model.config.width as f64;
-                            let local_y = event.position.1 - popup.panel_y;
-                            inside_x && popup.model.open_context_at(local_y)
-                        } else {
-                            false
-                        };
-                        if handled {
-                            if let Err(error) =
-                                self.open_monitor_context(qh, event.position.0, event.position.1)
-                            {
-                                eprintln!("mhyprbar: failed to open monitor context: {error:#}");
-                            }
-                            redraw = true;
-                        } else {
-                            self.close_monitor_popup();
-                        }
-                    }
-                    _ => {}
-                }
-                if redraw {
-                    self.draw_monitor_popup();
-                }
+                self.handle_monitor_pointer(qh, event);
                 continue;
             }
 
@@ -1470,6 +1330,8 @@ impl OutputHandler for App {
         _qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
+        #[cfg(mhypr_module = "monitor")]
+        self.monitor_identify.retain(|badge| badge.output != output);
         self.remove_output(&output);
     }
 }

@@ -10,6 +10,8 @@ use crate::{
 };
 
 mod bar;
+#[cfg(mhypr_module = "monitor")]
+mod display;
 mod layout;
 mod popup_common;
 mod popup_controls;

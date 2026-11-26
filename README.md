@@ -272,6 +272,18 @@ right = ["network", "cpu", "memory", "disk", "battery", "tray", "clock"]
 
 A module named in `bar.toml` must also be enabled in `build.modules.toml`.
 
+## Display settings
+
+Click the `monitor` (Display) module to open a compact map of the connected screens.
+Drag the numbered cards to rearrange them; nearby edges snap together. `Identify` briefly
+shows the matching number on each physical screen without capturing the pointer.
+
+Select a screen to edit its resolution, refresh rate, scale, or orientation. Refresh rates
+are limited to the selected screen and resolution; scroll a dropdown to see more options.
+`Apply` tries all pending changes together. Click `Keep` within 12 seconds, or the bar
+restores the previous settings. These are runtime changes through Hyprland's output
+management protocol; mHyprBar does not rewrite your Hyprland configuration.
+
 ## System tray
 
 The `tray` module implements the StatusNotifierWatcher + StatusNotifierHost pair and is

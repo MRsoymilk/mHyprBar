@@ -1439,6 +1439,23 @@ impl Renderer {
         padding_x: i32,
         padding_y: i32,
     ) -> Result<()> {
+        self.draw_text_content_aligned(
+            canvas, width, height, rect, text, style, padding_x, padding_y, None,
+        )
+    }
+
+    pub(super) fn draw_text_content_aligned(
+        &mut self,
+        canvas: &mut [u8],
+        width: u32,
+        height: u32,
+        rect: Rect,
+        text: &str,
+        style: &ModuleStyle,
+        padding_x: i32,
+        padding_y: i32,
+        alignment: Option<cosmic_text::Align>,
+    ) -> Result<()> {
         let foreground = style.foreground_rgba()?;
         let color = Color::rgba(foreground[0], foreground[1], foreground[2], foreground[3]);
         let text_x = rect.x.saturating_add(padding_x);
@@ -1459,7 +1476,7 @@ impl Renderer {
             name => Family::Name(name),
         };
         let attrs = Attrs::new().family(family);
-        buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        buffer.set_text(text, &attrs, Shaping::Advanced, alignment);
 
         buffer.draw(
             &mut self.fonts,

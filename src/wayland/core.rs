@@ -130,11 +130,7 @@ impl App {
         self.hyprland = snapshot;
         self.monitor_hotplug.complete(&self.hyprland);
         self.modules.force_refresh("monitor");
-        if let Some(popup) = self.monitor_popup.as_mut()
-            && let Err(error) = popup.model.refresh()
-        {
-            eprintln!("mhyprbar: monitor popup refresh after hotplug failed: {error:#}");
-        }
+        self.sync_monitor_settings();
         self.draw_all();
         Ok(())
     }

@@ -27,6 +27,12 @@ struct MonitorJson {
     refresh_rate: f64,
     #[serde(default = "default_monitor_scale")]
     scale: f64,
+    #[cfg(mhypr_module = "monitor")]
+    #[serde(default)]
+    transform: u8,
+    #[cfg(mhypr_module = "monitor")]
+    #[serde(rename = "mirrorOf", default)]
+    mirror_of: String,
     #[serde(default)]
     focused: bool,
     #[serde(default)]
@@ -181,6 +187,8 @@ pub struct MonitorInfo {
     pub x: i32,
     pub y: i32,
     pub scale: f64,
+    pub transform: u8,
+    pub mirror_of: String,
     pub focused: bool,
     pub dpms_status: bool,
     pub active_workspace: i32,
@@ -190,24 +198,21 @@ pub struct MonitorInfo {
 #[cfg(mhypr_module = "monitor")]
 impl MonitorInfo {
     pub fn logical_width(&self) -> f64 {
-        self.width.max(1) as f64 / self.scale.max(0.001)
+        let pixels = if self.transform % 2 == 1 {
+            self.height
+        } else {
+            self.width
+        };
+        pixels.max(1) as f64 / self.scale.max(0.001)
     }
 
     pub fn logical_height(&self) -> f64 {
-        self.height.max(1) as f64 / self.scale.max(0.001)
-    }
-
-    pub fn mode_string(&self) -> String {
-        format!(
-            "{}x{}@{:.3}",
-            self.width.max(1),
-            self.height.max(1),
-            self.refresh_rate.max(1.0)
-        )
-    }
-
-    pub fn position_string(&self) -> String {
-        format!("{}x{}", self.x, self.y)
+        let pixels = if self.transform % 2 == 1 {
+            self.width
+        } else {
+            self.height
+        };
+        pixels.max(1) as f64 / self.scale.max(0.001)
     }
 }
 
@@ -512,6 +517,8 @@ pub fn monitor_infos() -> Result<Vec<MonitorInfo>> {
             x: monitor.x,
             y: monitor.y,
             scale: monitor.scale,
+            transform: monitor.transform,
+            mirror_of: monitor.mirror_of,
             focused: monitor.focused,
             dpms_status: monitor.dpms_status,
             active_workspace: monitor.active_workspace.id,
@@ -531,26 +538,6 @@ pub fn focus_monitor(name: &str) -> Result<()> {
     if !command_succeeded(&response) {
         bail!(
             "Hyprland rejected monitor focus request: {}",
-            response.trim()
-        );
-    }
-    Ok(())
-}
-
-#[cfg(mhypr_module = "monitor")]
-pub fn configure_monitor(name: &str, mode: &str, position: &str, scale: f64) -> Result<()> {
-    if !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
-        bail!("invalid monitor scale");
-    }
-    let output = lua_quote(name);
-    let mode = lua_quote(mode);
-    let position = lua_quote(position);
-    let response = request(&format!(
-        "eval hl.monitor({{ output = {output}, mode = {mode}, position = {position}, scale = {scale:.3} }})"
-    ))?;
-    if !command_succeeded(&response) {
-        bail!(
-            "Hyprland rejected monitor configuration: {}",
             response.trim()
         );
     }

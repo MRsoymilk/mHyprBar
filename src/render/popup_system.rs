@@ -574,10 +574,23 @@ impl Renderer {
         model: &crate::modules::monitor::popup::MonitorPopupModel,
         panel_x: f64,
         panel_y: f64,
+        trial: Option<crate::modules::monitor::settings::TrialView>,
     ) -> Result<()> {
         canvas.fill(0);
 
         let cfg = &model.config;
+        if let Some(settings) = &model.settings {
+            return self.draw_display_settings(
+                canvas,
+                width,
+                height,
+                cfg,
+                settings,
+                &model.display_layout(),
+                (panel_x.round() as i32, panel_y.round() as i32),
+                trial,
+            );
+        }
         let panel = Rect {
             x: panel_x.round() as i32,
             y: panel_y.round() as i32,
@@ -587,7 +600,6 @@ impl Renderer {
         let background = cfg.style.background_rgba()?;
         let border = cfg.border_rgba()?;
         let separator = cfg.separator_rgba()?;
-        let selected_background = cfg.selected_background_rgba()?;
         let hover_background = cfg.hover_background_rgba()?;
 
         fill_rect(canvas, width, height, panel, background);
@@ -634,72 +646,7 @@ impl Renderer {
         let mut detail_style = cfg.style.clone();
         detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
 
-        if model.is_missing_windows() {
-            if model.missing_windows.is_empty() {
-                self.draw_text_content(
-                    canvas,
-                    width,
-                    height,
-                    Rect {
-                        x: content_x,
-                        y,
-                        w: content_w,
-                        h: cfg.row_height,
-                    },
-                    "No windows from disconnected displays",
-                    &cfg.style,
-                    0,
-                    0,
-                )?;
-                y += cfg.row_height;
-            } else {
-                for (index, window) in model.missing_windows.iter().enumerate() {
-                    let row = Rect {
-                        x: content_x,
-                        y,
-                        w: content_w,
-                        h: cfg.row_height,
-                    };
-                    if model.hovered_row == Some(index) {
-                        fill_rect(canvas, width, height, row, hover_background);
-                    }
-                    let primary = crate::modules::monitor::popup::MonitorPopupModel::missing_primary_text(window);
-                    let detail = crate::modules::monitor::popup::MonitorPopupModel::missing_detail_text(window);
-                    let top_h = (cfg.row_height / 2).max(1);
-                    self.draw_text_content(
-                        canvas,
-                        width,
-                        height,
-                        Rect {
-                            x: row.x + 6,
-                            y: row.y,
-                            w: (row.w - 12).max(1),
-                            h: top_h,
-                        },
-                        &primary,
-                        &cfg.style,
-                        0,
-                        0,
-                    )?;
-                    self.draw_text_content(
-                        canvas,
-                        width,
-                        height,
-                        Rect {
-                            x: row.x + 6,
-                            y: row.y + top_h,
-                            w: (row.w - 12).max(1),
-                            h: (row.h - top_h).max(1),
-                        },
-                        &detail,
-                        &detail_style,
-                        0,
-                        0,
-                    )?;
-                    y += cfg.row_height;
-                }
-            }
-        } else if model.monitors.is_empty() {
+        if model.missing_windows.is_empty() {
             self.draw_text_content(
                 canvas,
                 width,
@@ -710,28 +657,25 @@ impl Renderer {
                     w: content_w,
                     h: cfg.row_height,
                 },
-                "No active monitors",
+                "No windows from disconnected displays",
                 &cfg.style,
                 0,
                 0,
             )?;
-            y += cfg.row_height;
         } else {
-            for (index, monitor) in model.monitors.iter().enumerate() {
+            for (index, window) in model.missing_windows.iter().enumerate() {
                 let row = Rect {
                     x: content_x,
                     y,
                     w: content_w,
                     h: cfg.row_height,
                 };
-                if index == model.selected {
-                    fill_rect(canvas, width, height, row, selected_background);
-                } else if model.hovered_row == Some(index) {
+                if model.hovered_row == Some(index) {
                     fill_rect(canvas, width, height, row, hover_background);
                 }
-
-                let primary = crate::modules::monitor::popup::MonitorPopupModel::primary_text(monitor);
-                let detail = crate::modules::monitor::popup::MonitorPopupModel::detail_text(monitor);
+                use crate::modules::monitor::popup::MonitorPopupModel;
+                let primary = MonitorPopupModel::missing_primary_text(window);
+                let detail = MonitorPopupModel::missing_detail_text(window);
                 let top_h = (cfg.row_height / 2).max(1);
                 self.draw_text_content(
                     canvas,
@@ -767,109 +711,6 @@ impl Renderer {
             }
         }
 
-        let _ = y;
-
         Ok(())
     }
-
-    #[cfg(mhypr_module = "monitor")]
-    pub fn draw_monitor_context(
-        &mut self,
-        canvas: &mut [u8],
-        width: u32,
-        height: u32,
-        model: &crate::modules::monitor::popup::MonitorPopupModel,
-        panel_x: f64,
-        panel_y: f64,
-        panel_width: i32,
-        row_height: i32,
-        hovered_action: Option<usize>,
-    ) -> Result<()> {
-        canvas.fill(0);
-        let cfg = &model.config;
-        let panel = Rect {
-            x: panel_x.round() as i32,
-            y: panel_y.round() as i32,
-            w: panel_width,
-            h: row_height.saturating_mul(9),
-        };
-        let background = cfg.style.background_rgba()?;
-        let border = cfg.border_rgba()?;
-        let separator = cfg.separator_rgba()?;
-        let hover_background = cfg.hover_background_rgba()?;
-        fill_rect(canvas, width, height, panel, background);
-        draw_rect_border(canvas, width, height, panel, border, 1);
-
-        let actions = [
-            ("Focus", "Focus this display"),
-            ("Scale -", "Decrease scale by 0.25"),
-            ("Scale +", "Increase scale by 0.25"),
-            ("Left", "Place automatically to the left"),
-            ("Up", "Place automatically above"),
-            ("Down", "Place automatically below"),
-            ("Right", "Place automatically to the right"),
-            ("Mode -", "Switch to previous display mode"),
-            ("Mode +", "Switch to next display mode"),
-        ];
-        let mut detail_style = cfg.style.clone();
-        detail_style.font_size = (cfg.style.font_size - 1.0).max(9.0);
-        for (index, (label, description)) in actions.iter().enumerate() {
-            let row = Rect {
-                x: panel.x,
-                y: panel.y + index as i32 * row_height,
-                w: panel.w,
-                h: row_height,
-            };
-            if hovered_action == Some(index) {
-                fill_rect(canvas, width, height, row, hover_background);
-            }
-            if index > 0 {
-                fill_rect(
-                    canvas,
-                    width,
-                    height,
-                    Rect {
-                        x: row.x,
-                        y: row.y,
-                        w: row.w,
-                        h: 1,
-                    },
-                    separator,
-                );
-            }
-            let label_w = 88;
-            self.draw_text_content(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: row.x + 10,
-                    y: row.y,
-                    w: label_w,
-                    h: row.h,
-                },
-                label,
-                &cfg.style,
-                0,
-                0,
-            )?;
-            self.draw_text_content(
-                canvas,
-                width,
-                height,
-                Rect {
-                    x: row.x + label_w,
-                    y: row.y,
-                    w: (row.w - label_w - 10).max(1),
-                    h: row.h,
-                },
-                description,
-                &detail_style,
-                0,
-                0,
-            )?;
-        }
-        Ok(())
-    }
-
 }

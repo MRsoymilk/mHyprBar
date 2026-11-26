@@ -1,4 +1,5 @@
 pub mod popup;
+pub mod settings;
 
 use std::{
     io::Write,
@@ -392,6 +393,8 @@ mod tests {
             x,
             y,
             scale: 1.0,
+            transform: 0,
+            mirror_of: String::new(),
             focused,
             dpms_status: true,
             active_workspace: 1,

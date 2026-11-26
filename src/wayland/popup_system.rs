@@ -834,20 +834,16 @@ impl App {
         if now < popup.next_refresh {
             return;
         }
-        if let Err(error) = popup.model.refresh() {
-            eprintln!("mhyprbar: monitor popup refresh failed: {error:#}");
-        }
         popup.next_refresh = now + popup.model.config.refresh_interval();
-        if self.modules.force_refresh("monitor") {
-            self.draw_all();
-        }
-        self.draw_monitor_popup();
+        self.sync_monitor_settings();
     }
 
     #[cfg(mhypr_module = "monitor")]
     pub(super) fn close_monitor_popup(&mut self) {
-        self.monitor_context = None;
         self.monitor_popup = None;
+        self.monitor_identify.clear();
+        self.monitor_identify_until = None;
+        self.restore_monitor_config("Previous display settings restored");
     }
 
     #[cfg(mhypr_module = "monitor")]
@@ -885,7 +881,7 @@ impl App {
         qh: &QueueHandle<Self>,
         bar_index: usize,
         local_x: f64,
-        model: MonitorPopupModel,
+        mut model: MonitorPopupModel,
     ) -> Result<bool> {
         if !model.config.enabled {
             return Ok(false);
@@ -900,10 +896,21 @@ impl App {
             .get(bar_index)
             .context("monitor popup bar output is unavailable")?;
         let output = bar.output.clone();
+        let bar_height = bar.height;
         let output_height = self
-            .monitor_for_bar(bar_index)
-            .map(|monitor| monitor.height.max(1) as f64)
-            .unwrap_or(1080.0);
+            .output_state
+            .info(&output)
+            .and_then(|info| info.logical_size)
+            .map_or(1080.0, |(_, height)| f64::from(height));
+        let preferred_width = model.config.width.clamp(320, 1000);
+        if let Some(settings) = &mut model.settings {
+            model.config.width = preferred_width.min(bar.width.max(1) as i32);
+            if let Some(index) = settings.displays.iter().position(|display| {
+                bar.output_name.as_deref() == Some(display.info.name.as_str())
+            }) {
+                settings.selected = index;
+            }
+        }
         let panel_w = model.config.width as f64;
         let panel_h = model.panel_height() as f64;
         let panel_x = (local_x - panel_w / 2.0).clamp(0.0, (bar.width as f64 - panel_w).max(0.0));
@@ -945,13 +952,18 @@ impl App {
         let interval = model.config.refresh_interval();
         self.monitor_popup = Some(MonitorPopupSurface {
             layer,
+            qh: qh.clone(),
             model,
-            output,
             width: 1,
             height: 1,
             configured: false,
             panel_x,
             panel_y,
+            anchor_x: local_x,
+            preferred_width,
+            bar_height,
+            frame_pending: false,
+            redraw_pending: false,
             next_refresh: Instant::now() + interval,
         });
         Ok(true)
@@ -959,10 +971,15 @@ impl App {
 
     #[cfg(mhypr_module = "monitor")]
     pub(super) fn draw_monitor_popup(&mut self) {
-        let Some(popup) = self.monitor_popup.as_ref() else {
+        let trial = self.display_trial_view();
+        let Some(popup) = self.monitor_popup.as_mut() else {
             return;
         };
         if !popup.configured || popup.width == 0 || popup.height == 0 {
+            return;
+        }
+        if popup.frame_pending {
+            popup.redraw_pending = true;
             return;
         }
 
@@ -987,10 +1004,9 @@ impl App {
             }
         };
 
-        if let Err(error) =
-            self.renderer
-                .draw_monitor_popup(canvas, width, height, &popup.model, panel_x, panel_y)
-        {
+        if let Err(error) = self.renderer.draw_monitor_popup(
+            canvas, width, height, &popup.model, panel_x, panel_y, trial,
+        ) {
             eprintln!("mhyprbar: monitor popup render failed: {error:#}");
             return;
         }
@@ -1000,103 +1016,12 @@ impl App {
             eprintln!("mhyprbar: failed to attach monitor popup SHM buffer: {error}");
             return;
         }
-        layer.commit();
-    }
-
-    #[cfg(mhypr_module = "monitor")]
-    pub(super) fn open_monitor_context(
-        &mut self,
-        qh: &QueueHandle<Self>,
-        cursor_x: f64,
-        cursor_y: f64,
-    ) -> Result<()> {
-        let Some(popup) = self.monitor_popup.as_ref() else {
-            return Ok(());
-        };
-        let output = popup.output.clone();
-        let output_w = popup.width.max(1) as f64;
-        let output_h = popup.height.max(1) as f64;
-        let panel_width = 360;
-        let row_height = 30;
-        let panel_height = row_height * 9;
-        let panel_x = (cursor_x + 8.0).clamp(0.0, (output_w - panel_width as f64).max(0.0));
-        let panel_y = (cursor_y + 8.0).clamp(0.0, (output_h - panel_height as f64).max(0.0));
-
-        self.monitor_context = None;
-        let surface = self.compositor.create_surface(qh);
-        let layer = self.layer_shell.create_layer_surface(
-            qh,
-            surface,
-            Layer::Overlay,
-            Some("mhyprbar-monitor-context"),
-            Some(&output),
+        surface.frame(
+            &popup.qh,
+            smithay_client_toolkit::compositor::FrameCallbackData(surface.clone()),
         );
-        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_exclusive_zone(-1);
-        layer.set_size(0, 0);
-        layer.commit();
-        self.monitor_context = Some(MonitorContextSurface {
-            layer,
-            width: 1,
-            height: 1,
-            configured: false,
-            panel_x,
-            panel_y,
-            panel_width,
-            row_height,
-            hovered_action: None,
-        });
-        Ok(())
-    }
-
-    #[cfg(mhypr_module = "monitor")]
-    pub(super) fn draw_monitor_context(&mut self) {
-        let Some(context) = self.monitor_context.as_ref() else {
-            return;
-        };
-        let Some(popup) = self.monitor_popup.as_ref() else {
-            return;
-        };
-        if !context.configured || context.width == 0 || context.height == 0 {
-            return;
-        }
-        let surface = context.layer.wl_surface().clone();
-        let layer = context.layer.clone();
-        let width = context.width;
-        let height = context.height;
-        let stride = width as i32 * 4;
-        let (buffer, canvas) = match self.pool.create_buffer(
-            width as i32,
-            height as i32,
-            stride,
-            wl_shm::Format::Argb8888,
-        ) {
-            Ok(pair) => pair,
-            Err(error) => {
-                eprintln!("mhyprbar: failed to create monitor context SHM buffer: {error}");
-                return;
-            }
-        };
-        if let Err(error) = self.renderer.draw_monitor_context(
-            canvas,
-            width,
-            height,
-            &popup.model,
-            context.panel_x,
-            context.panel_y,
-            context.panel_width,
-            context.row_height,
-            context.hovered_action,
-        ) {
-            eprintln!("mhyprbar: monitor context render failed: {error:#}");
-            return;
-        }
-        surface.damage_buffer(0, 0, width as i32, height as i32);
-        if let Err(error) = buffer.attach_to(&surface) {
-            eprintln!("mhyprbar: failed to attach monitor context SHM buffer: {error}");
-            return;
-        }
+        popup.frame_pending = true;
+        popup.redraw_pending = false;
         layer.commit();
     }
 

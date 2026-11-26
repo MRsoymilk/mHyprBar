@@ -57,7 +57,7 @@ use crate::modules::layout::popup::LayoutPopupModel;
 #[cfg(mhypr_module = "memory")]
 use crate::modules::memory::popup::MemoryPopupModel;
 #[cfg(mhypr_module = "monitor")]
-use crate::modules::monitor::popup::{MonitorPopupModel, context_action};
+use crate::modules::monitor::popup::MonitorPopupModel;
 #[cfg(mhypr_module = "network")]
 use crate::modules::network::popup::NetworkPopupModel;
 use crate::{
@@ -74,9 +74,13 @@ use crate::modules::tray::{
 };
 
 mod core;
+#[cfg(mhypr_module = "monitor")]
+mod display;
 mod handlers;
 #[cfg(mhypr_module = "monitor")]
 mod hotplug;
+#[cfg(mhypr_module = "monitor")]
+mod output_management;
 mod popup_controls;
 mod popup_storage;
 mod popup_system;
@@ -174,7 +178,13 @@ pub fn run(config: BarConfig) -> Result<()> {
         #[cfg(mhypr_module = "monitor")]
         monitor_popup: None,
         #[cfg(mhypr_module = "monitor")]
-        monitor_context: None,
+        output_management: output_management::OutputManagement::bind(&globals, &qh),
+        #[cfg(mhypr_module = "monitor")]
+        monitor_config_trial: None,
+        #[cfg(mhypr_module = "monitor")]
+        monitor_identify: Vec::new(),
+        #[cfg(mhypr_module = "monitor")]
+        monitor_identify_until: None,
         #[cfg(mhypr_module = "network")]
         network_popup: None,
         #[cfg(mhypr_module = "tray")]
@@ -306,6 +316,8 @@ pub fn run(config: BarConfig) -> Result<()> {
                                     }
                                 }
                                 Ok(Some(Request::Quit)) => {
+                                    #[cfg(mhypr_module = "monitor")]
+                                    app.close_monitor_popup();
                                     app.exit = true;
                                     "ok\n".to_owned()
                                 }
@@ -328,7 +340,16 @@ pub fn run(config: BarConfig) -> Result<()> {
         )
         .context("failed to register control socket")?;
 
-    while !app.exit {
+    loop {
+        if app.exit {
+            #[cfg(mhypr_module = "monitor")]
+            let restoring = app.monitor_config_trial.is_some();
+            #[cfg(not(mhypr_module = "monitor"))]
+            let restoring = false;
+            if !restoring {
+                break;
+            }
+        }
         let mut timeout = app.modules.next_timeout();
         #[cfg(mhypr_module = "monitor")]
         if let Some(hotplug_timeout) = app.monitor_hotplug_timeout() {
@@ -369,6 +390,10 @@ pub fn run(config: BarConfig) -> Result<()> {
         if let Some(monitor_timeout) = app.monitor_popup_timeout() {
             timeout = timeout.min(monitor_timeout);
         }
+        #[cfg(mhypr_module = "monitor")]
+        if let Some(timeout_display) = app.display_timeout() {
+            timeout = timeout.min(timeout_display);
+        }
         #[cfg(mhypr_module = "memory")]
         if let Some(memory_timeout) = app.memory_popup_timeout() {
             timeout = timeout.min(memory_timeout);
@@ -399,7 +424,10 @@ pub fn run(config: BarConfig) -> Result<()> {
         #[cfg(mhypr_module = "gpu")]
         app.refresh_gpu_popup_if_due();
         #[cfg(mhypr_module = "monitor")]
-        app.refresh_monitor_popup_if_due();
+        {
+            app.update_display_timers();
+            app.refresh_monitor_popup_if_due();
+        }
         #[cfg(mhypr_module = "memory")]
         app.refresh_memory_popup_if_due();
     }
@@ -494,27 +522,19 @@ struct GpuPopupSurface {
 #[cfg(mhypr_module = "monitor")]
 struct MonitorPopupSurface {
     layer: LayerSurface,
+    qh: QueueHandle<App>,
     model: MonitorPopupModel,
-    output: wl_output::WlOutput,
     width: u32,
     height: u32,
     configured: bool,
     panel_x: f64,
     panel_y: f64,
+    anchor_x: f64,
+    preferred_width: i32,
+    bar_height: u32,
+    frame_pending: bool,
+    redraw_pending: bool,
     next_refresh: Instant,
-}
-
-#[cfg(mhypr_module = "monitor")]
-struct MonitorContextSurface {
-    layer: LayerSurface,
-    width: u32,
-    height: u32,
-    configured: bool,
-    panel_x: f64,
-    panel_y: f64,
-    panel_width: i32,
-    row_height: i32,
-    hovered_action: Option<usize>,
 }
 
 #[cfg(mhypr_module = "active_window")]
@@ -676,7 +696,13 @@ struct App {
     #[cfg(mhypr_module = "monitor")]
     monitor_popup: Option<MonitorPopupSurface>,
     #[cfg(mhypr_module = "monitor")]
-    monitor_context: Option<MonitorContextSurface>,
+    output_management: Option<output_management::OutputManagement>,
+    #[cfg(mhypr_module = "monitor")]
+    monitor_config_trial: Option<display::MonitorConfigTrial>,
+    #[cfg(mhypr_module = "monitor")]
+    monitor_identify: Vec<display::IdentifyBadge>,
+    #[cfg(mhypr_module = "monitor")]
+    monitor_identify_until: Option<Instant>,
     #[cfg(mhypr_module = "network")]
     network_popup: Option<NetworkPopupSurface>,
     #[cfg(mhypr_module = "tray")]
